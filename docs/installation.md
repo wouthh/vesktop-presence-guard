@@ -37,14 +37,17 @@ node scripts/install.mjs install --config "$PG_CONFIG" --dry-run
 writes commit/upstream/file fingerprints, preserves other userplugin directories,
 and rejects changed or unowned staging trees. A separate receipt in the Vencord
 Git metadata pins the previous marker before any replacement; editing both source
-and its colocated marker cannot silently authorize deletion. Legacy staging can
+and its colocated marker cannot silently authorize deletion. Receipt writability
+is checked before replacing the old staging tree. Legacy staging can
 be attested only when it matches current canonical source exactly. `prepare` stages under the updater
 lock, then asks the updater to build an isolated candidate without activation.
 The canonical project gate and the full combined Vencord checks must pass first.
 Commit all source changes before installation; dirty or mismatched heads fail.
 Installation compiles the helper directly from that clean source and records its
 hash; ignored build artifacts are never installed as trusted input. Launcher and
-helper configuration are checked before candidate activation.
+helper configuration and the installation receipt target are checked before
+candidate activation. Unexpected directories, symlinks and read-only receipt
+targets stop the operation before integration changes.
 
 Immediately before restart, verify **neither profile has a call or capture**.
 If reliable client inspection is unavailable, obtain an explicit no-call/capture

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 export const UPSTREAM = "0e40e433d7aa9168f656aba733d01e761b7ca8ca";
 export const hash = value => createHash("sha256").update(value).digest("hex");
 export function inventory(root) {
@@ -56,6 +56,14 @@ export function stage(project, vencord, dryRun = false) {
         if (JSON.stringify(actual) !== JSON.stringify(old.files)) throw Error("staged_source_drift");
     }
     else if (existsSync(receiptPath)) throw Error("staging_tree_missing_receipt_preserved");
+    // Reject predictable receipt failures before replacing the previously verified tree.
+    let receiptStat;
+    try { receiptStat = lstatSync(receiptPath); } catch (e) { if (e.code !== "ENOENT") throw e; }
+    if (receiptStat && (!receiptStat.isFile() || receiptStat.isSymbolicLink() || !(receiptStat.mode & 0o222))) throw Error("staging_receipt_not_writable_regular_file");
+    if (receiptStat) accessSync(receiptPath, constants.W_OK);
+    const receiptParent = lstatSync(dirname(receiptPath));
+    if (!receiptParent.isDirectory() || receiptParent.isSymbolicLink() || !(receiptParent.mode & 0o222)) throw Error("staging_receipt_parent_not_writable");
+    accessSync(dirname(receiptPath), constants.W_OK);
     if (dryRun) return { destination, commit, sourceHash, files: Object.keys(files).length };
     if (existsSync(destination)) rmSync(destination, { recursive: true }); // Exact, verified, generated tree only.
     mkdirSync(destination, { recursive: true });

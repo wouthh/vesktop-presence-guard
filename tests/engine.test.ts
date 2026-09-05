@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PresenceEngine } from "../src/core/engine";
-import { clearHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
+import { clearHistoryView, loadHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
 import type { HistoryEvent, Options, Snapshot, Status, WriteToken } from "../src/core/types";
 
@@ -154,4 +154,14 @@ test("history clear keeps events recorded after the serialized clear request", a
     const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }));
     const later = { ...original, at: original.at + 1 }; view = [...view, later]; release(); await clearing;
     assert.deepEqual(view, [later]);
+});
+
+test("failed clear reloads retained startup history and preserves events received during the request", async () => {
+    const f = fixture(); f.engine.sample(); const old = f.history[0], recent = { ...old, at: old.at + 1 };
+    let events = [recent], generation = 0, release!: (history: HistoryEvent[]) => void;
+    const view = { get: () => events, set: (value: HistoryEvent[]) => { events = value; } };
+    const startup = loadHistoryView(view, () => new Promise(r => { release = r; }), () => generation === 0, () => recent.at);
+    generation++;
+    await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at)), /read_only_storage/);
+    assert.deepEqual(events, [old, recent]);
 });

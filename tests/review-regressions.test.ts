@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CameraTracks } from "../src/core/tracks";
 // @ts-expect-error Installation JavaScript is linted and tested directly.
-import { planHelper, planSettings, preflightRollback } from "../scripts/install.mjs";
+import { planHelper, planSettings, preflightRollback, PARENT_START_AWK } from "../scripts/install.mjs";
+import { startIdentity, releaseMonitoring } from "../helper/lifetime";
 // @ts-expect-error Build JavaScript is linted and tested directly.
 import { compileHelper } from "../scripts/helper-build.mjs";
 // @ts-expect-error Integration JavaScript is linted and tested directly.
@@ -60,4 +61,30 @@ test("rollback preflight rejects replaced targets before any release mutation", 
     preflightRollback(c); symlinkSync(settings, lease); assert.throws(() => preflightRollback(c), /unsafe_target_file/); unlinkSync(lease);
     chmodSync(join(c.mainProfile, "settings"), 0o500); assert.throws(() => preflightRollback(c), /unsafe_target_parent/); chmodSync(join(c.mainProfile, "settings"), 0o700);
     assert.equal(readFileSync(c.mainLauncher, "utf8"), "original launcher"); assert.equal(readFileSync(c.updater, "utf8"), "original updater");
+});
+
+test("first install rejects an unsafe installation receipt without changing any integration", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, mainProfile: join(root, "main"), mainLauncher: join(root, "launcher"), ledger: join(root, "ledger") };
+    mkdirSync(c.mainProfile); mkdirSync(c.ledger);
+    const launcher = "#!/bin/sh\nexec mullvad-exclude flatpak run dev.vencord.Vesktop\n";
+    writeFileSync(c.mainLauncher, launcher); const receipt = join(c.ledger, "installed.json");
+    mkdirSync(receipt); assert.throws(() => planHelper(c), /unsafe_target_file/); rmSync(receipt, { recursive: true });
+    symlinkSync(c.mainLauncher, receipt); assert.throws(() => planHelper(c), /unsafe_target_file/); unlinkSync(receipt);
+    writeFileSync(receipt, "{}", { mode: 0o400 }); assert.throws(() => planHelper(c), /target_not_writable/);
+    assert.equal(readFileSync(c.mainLauncher, "utf8"), launcher); assert.deepEqual(readdirSync(c.mainProfile), []);
+});
+
+test("launcher and helper agree on parent identity for spaces and closing parentheses", () => {
+    for (const name of ["simple", "a process", "a) tricky ) process"]) {
+        const stat = `123 (${name}) ${Array.from({ length: 24 }, (_, i) => i === 19 ? "456789" : "0").join(" ")}`;
+        const launcher = execFileSync("awk", [PARENT_START_AWK], { input: stat, encoding: "utf8" }).trim();
+        assert.equal(launcher, "456789"); assert.equal(launcher, startIdentity(stat));
+    }
+});
+
+test("releasing monitoring unsubscribes despite failed snapshot storage", () => {
+    const subscriptions = new Set([1, 2, 3]); let attempts = 0;
+    releaseMonitoring(() => { attempts++; throw Error("read_only_storage"); }, () => subscriptions.clear());
+    assert.equal(attempts, 1); assert.equal(subscriptions.size, 0);
 });

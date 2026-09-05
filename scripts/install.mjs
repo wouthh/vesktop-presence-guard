@@ -9,6 +9,7 @@ import { compileHelper } from "./helper-build.mjs";
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = path => JSON.parse(readFileSync(path, "utf8"));
 const shellQuote = s => `'${s.replaceAll("'", "'\\''")}'`;
+export const PARENT_START_AWK = '{sub(/^.*\\) /, ""); print $20}';
 function atomic(path, value, mode = 0o600) {
     const temp = `${path}.${process.pid}.new`;
     writeFileSync(temp, value, { mode, flag: "wx" }); renameSync(temp, path);
@@ -124,7 +125,9 @@ export function planHelper(c) {
         if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw Error("helper_directory_drift");
         accessSync(existsSync(path) ? path : dirname(path), constants.W_OK);
     }
-    writableTarget(c.mainLauncher); writableTarget(join(c.ledger, "installed-launcher.sha256"), true); accessSync(c.ledger, constants.W_OK);
+    writableTarget(c.mainLauncher);
+    for (const name of ["installed-launcher.sha256", "installed.json"]) writableTarget(join(c.ledger, name), true);
+    accessSync(c.ledger, constants.W_OK);
     const configPath = join(native, "installation.json");
     if (existsSync(configPath) && (lstatSync(configPath).isSymbolicLink() || read(configPath).snapshot !== join(root, "display.json") || read(configPath).version !== 1)) throw Error("helper_configuration_drift");
     const helperPath = join(root, "display-helper.mjs"), receipt = join(c.ledger, "installed.json");
@@ -139,7 +142,7 @@ export function planHelper(c) {
     const lines = launcher.trimEnd().split("\n");
     if (!lines.at(-1).startsWith("exec ") || !lines.at(-1).includes("mullvad-exclude") || !lines.at(-1).includes("flatpak run")) throw Error("unsupported_launcher_shape_preserved");
     const launch = lines.pop();
-    const injection = `${marker}\npg_start=$(awk '{print $22}' /proc/$$/stat)\n/usr/bin/gjs -m ${shellQuote(join(root, "display-helper.mjs"))} "$$" "$pg_start" ${shellQuote(join(root, "display.json"))} ${shellQuote(join(native, "lease.json"))} >> ${shellQuote(join(native, "helper.log"))} 2>&1 &\n`;
+    const injection = `${marker}\npg_start=$(awk ${shellQuote(PARENT_START_AWK)} /proc/$$/stat)\n/usr/bin/gjs -m ${shellQuote(join(root, "display-helper.mjs"))} "$$" "$pg_start" ${shellQuote(join(root, "display.json"))} ${shellQuote(join(native, "lease.json"))} >> ${shellQuote(join(native, "helper.log"))} 2>&1 &\n`;
     const next = `${lines.join("\n")}\n${injection}${launch}\n`;
     return { root, native, configPath, launcher: next };
 }

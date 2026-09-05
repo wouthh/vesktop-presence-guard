@@ -7,3 +7,8 @@ export function leaseActive(value: unknown, now: number): boolean {
     const lease = value as { enabled: unknown; at: number };
     return lease.enabled === true && Number.isFinite(lease.at) && now >= lease.at && now - lease.at < 10000;
 }
+
+export function releaseMonitoring(publishTombstone: () => void, unsubscribe: () => void): void {
+    try { publishTombstone(); } catch { /* Expiry still makes the last snapshot unusable. */ }
+    finally { unsubscribe(); }
+}

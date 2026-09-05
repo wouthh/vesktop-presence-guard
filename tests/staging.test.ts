@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -20,6 +20,12 @@ test("actual staging dry run, repeat install and drift rejection preserve other 
     const dry = stage(project, vc, true); assert.equal(dry.files, 1); assert.throws(() => readFileSync(join(dry.destination, "buildInfo.ts")));
     const a = stage(project, vc), b = stage(project, vc); assert.deepEqual(a, b);
     verifyStaged(project, a.destination, a.commit);
+    const receipt = join(vc, ".git/presence-guard-stage.json"), beforeReceipt = readFileSync(receipt, "utf8");
+    const beforeTree = readFileSync(join(a.destination, "buildInfo.ts"), "utf8");
+    chmodSync(receipt, 0o400); writeFileSync(join(project, "src/new.ts"), "// next reviewed source\n");
+    assert.throws(() => stage(project, vc), /receipt_not_writable/);
+    assert.equal(readFileSync(receipt, "utf8"), beforeReceipt); assert.equal(readFileSync(join(a.destination, "buildInfo.ts"), "utf8"), beforeTree);
+    assert.throws(() => readFileSync(join(a.destination, "new.ts"))); chmodSync(receipt, 0o600); rmSync(join(project, "src/new.ts"));
     const manifestPath = join(a.destination, ".presence-guard-stage.json"), markerBytes = readFileSync(manifestPath, "utf8"), manifest = JSON.parse(markerBytes);
     const original = readFileSync(join(a.destination, "buildInfo.ts"), "utf8");
     writeFileSync(join(a.destination, "buildInfo.ts"), "tampered"); manifest.files["buildInfo.ts"] = hash("tampered"); writeFileSync(manifestPath, JSON.stringify(manifest));

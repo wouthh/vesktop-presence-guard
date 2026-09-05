@@ -2,7 +2,7 @@
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import GLibUnix from "gi://GLibUnix";
-import { leaseActive, startIdentity } from "./lifetime";
+import { leaseActive, releaseMonitoring, startIdentity } from "./lifetime";
 // Fixed installation paths are provided by an owner-only launcher, never the renderer.
 const [parentText, parentStart, snapshotPath, leasePath] = ARGV;
 if (!/^\d+$/.test(parentText ?? "") || !/^\d+$/.test(parentStart ?? "") || !snapshotPath?.startsWith("/") || !leasePath?.startsWith("/")) throw Error("invalid_helper_arguments");
@@ -44,9 +44,10 @@ async function observe() {
     let enabled = false;
     try { enabled = leaseActive(JSON.parse(read(leasePath)), Date.now()); } catch { /* Missing lease stops collection. */ }
     if (!enabled) {
-        if (lastLease) write({ version: 1, at: Date.now(), observation: null, reason: "lease_inactive" });
+        const wasEnabled = lastLease;
         lastLease = false;
-        unsubscribe(); return;
+        releaseMonitoring(() => { if (wasEnabled) write({ version: 1, at: Date.now(), observation: null, reason: "lease_inactive" }); }, unsubscribe);
+        return;
     }
     if (!lastLease) { provider++; startSubscriptions(); }
     lastLease = true;
