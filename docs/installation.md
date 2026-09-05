@@ -22,7 +22,8 @@ PresenceGuard staging manifest, verify its hashes against canonical source,
 recheck candidate bundle hashes at activation, preserve its source alongside
 all existing custom plugins, and protect the release named in
 `.presence-guard/baseline.json` from retention pruning. Record its installed SHA256
-in `installed-updater.sha256` in the ledger. This project does not publish or
+in the required `installed-updater.sha256` receipt in the ledger; an original
+unextended updater is not accepted as a substitute. This project does not publish or
 replace private updaters. The adapter's supported commands are `rebuild` and
 `activate`, using the existing lock and retained-release workflow.
 
@@ -79,6 +80,9 @@ run `prepare`, gracefully close both profiles after the same call/capture check,
 and run `update` instead of `install`. Existing rule preferences are preserved.
 `inspect` and `--dry-run` do not activate, write settings, or terminate processes.
 Unexpected source/launcher/updater/build drift stops the operation for review.
+The internal lock handoff verifies a kernel-reported exclusive lock on the exact
+updater lock file owned by the current process; a caller-supplied marker cannot
+bypass locking.
 Do not delete receipts to bypass a drift failure.
 
 ## Rollback or uninstall

@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { PresenceEngine } from "../src/core/engine";
 import { clearHistoryView, loadHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
+import { combineCamera } from "../src/core/camera";
+import { UNKNOWN } from "../src/core/types";
 import type { HistoryEvent, Options, Snapshot, Status, WriteToken } from "../src/core/types";
 
 function fixture(options: Partial<Options> = {}) {
@@ -31,8 +33,20 @@ function fixture(options: Partial<Options> = {}) {
     }
     function signal(display: Snapshot["display"]["value"], camera: Snapshot["camera"]["value"] = s.camera.value) { s.display = { ...s.display, value: display, at: now }; s.camera = { ...s.camera, value: camera, at: now }; engine.sample(); }
     function manual(status: Status) { engine.manual(status); s.configured = s.effective = status; engine.sample("manual"); }
-    return { s, engine, history, writes, advance, signal, manual, flush, delayWrite: (fn: () => Promise<void>) => { gate = fn; }, delayAck: (fn: () => Promise<void>) => { ack = fn; } };
+    return { s, engine, history, writes, advance, signal, manual, flush, now: () => now, delayWrite: (fn: () => Promise<void>) => { gate = fn; }, delayAck: (fn: () => Promise<void>) => { ack = fn; } };
 }
+for (const boundary of ["reconnect", "account"]) test(`camera evidence must be observed after ${boundary}, not merely read again`, async () => {
+    const f = fixture({ idle: false }); f.engine.sample();
+    const captured = { ...f.s.camera, value: "active" as const };
+    await f.advance(1);
+    if (boundary === "account") { f.s.account = "another-synthetic"; f.engine.sample(); }
+    else f.engine.boundary("reconnect");
+    await f.advance(1);
+    f.s.camera = combineCamera(captured, UNKNOWN("local"), f.now()); f.engine.sample();
+    await f.advance(); assert.deepEqual(f.writes, []);
+    f.s.camera = combineCamera({ ...captured, at: f.now() }, UNKNOWN("local"), f.now()); f.engine.sample();
+    await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
+});
 test("observation-only never writes or acquires simulated ownership", async () => {
     const f = fixture({ idle: false, camera: false }); f.signal("inactive"); await f.advance(); f.signal("inactive", "active"); await f.advance();
     assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null); assert(f.history.some(e => e.kind === "simulation"));

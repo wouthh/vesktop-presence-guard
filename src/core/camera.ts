@@ -53,7 +53,8 @@ export class PipeWireDetector {
 
 export function combineCamera(pipewire: Signal, local: Signal, now: number): Signal {
     const scope = "Partial: observed Vesktop camera streams and PipeWire UVC capture";
-    if ([pipewire, local].some(s => fresh(s, now) && s.value === "active")) return { value: "active", at: now, scope, reason: "confirmed_capture_in_supported_scope" };
+    const active = [pipewire, local].filter(s => fresh(s, now) && s.value === "active");
+    if (active.length) return { value: "active", at: Math.max(...active.map(s => s.at)), scope, reason: "confirmed_capture_in_supported_scope" };
     // Unavailable coverage is not a negative observation. In particular, a lost local stream cannot release DND.
     if ([pipewire, local].some(s => !fresh(s, now))) return UNKNOWN(scope, "camera_provider_unknown", now);
     return { value: "inactive", at: Math.min(pipewire.at, local.at), scope, reason: "capture_clear_in_observed_scopes" };

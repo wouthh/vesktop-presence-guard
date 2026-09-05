@@ -45,7 +45,10 @@ test("baseline pinning and wiring validation reject changed files", t => {
     const c = { vencordRoot: root, ledger, mainLauncher: join(root, "launcher"), updater: join(root, "updater") };
     for (const [path, backup] of [[c.mainLauncher, "main-launcher"], [c.updater, "updater"]]) { writeFileSync(path, "fixture"); writeFileSync(join(ledger, "backups", backup), "fixture"); }
     writeFileSync(join(ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
-    assert.deepEqual(pinBaseline(c), pinBaseline(c)); verifyWiring(c); writeFileSync(c.mainLauncher, "changed"); assert.throws(() => verifyWiring(c), /drift/);
+    assert.deepEqual(pinBaseline(c), pinBaseline(c));
+    assert.throws(() => verifyWiring(c), /required_updater_receipt_missing/);
+    writeFileSync(join(ledger, "installed-updater.sha256"), hash("fixture"));
+    verifyWiring(c); writeFileSync(c.mainLauncher, "changed"); assert.throws(() => verifyWiring(c), /drift/);
     writeFileSync(join(ledger, "backups/updater"), "changed backup"); assert.throws(() => pinBaseline(c), /backup_drift/);
     writeFileSync(join(ledger, "backups/updater"), "fixture");
     const baselinePath = join(root, ".presence-guard/baseline.json"), originalBaseline = readFileSync(baselinePath, "utf8"), tampered = JSON.parse(originalBaseline);
@@ -91,4 +94,7 @@ test("staging CLI creates an absent updater runtime directory and remains repeat
     const config = join(root, "private.json"); writeFileSync(config, JSON.stringify(c), { mode: 0o600 });
     for (let i = 0; i < 2; i++) execFileSync(process.execPath, ["scripts/install.mjs", "stage", "--config", config], { stdio: "pipe" });
     assert.equal(readFileSync(c.updaterLock, "utf8"), ""); assert(readFileSync(join(root, "src/userplugins/presenceGuard/.presence-guard-stage.json"), "utf8").includes('"version": 1'));
+    const marker = join(root, "src/userplugins/presenceGuard/.presence-guard-stage.json"), before = readFileSync(marker, "utf8");
+    assert.throws(() => execFileSync(process.execPath, ["scripts/install.mjs", "stage", "--config", config, "--locked"], { stdio: "pipe" }), /updater_lock_not_held/);
+    assert.equal(readFileSync(marker, "utf8"), before);
 });

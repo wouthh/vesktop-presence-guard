@@ -35,6 +35,14 @@ test("malformed graphs, disappeared captured camera and provider failures remain
 test("positive evidence survives an unknown secondary provider; missing evidence never clears", () => {
     const active = { value: "active" as const, at: 100, scope: "fixture", reason: "capture" }; const clear = { ...active, value: "inactive" as const }; assert.equal(combineCamera(active, UNKNOWN("fixture"), 100).value, "active"); assert.equal(combineCamera(clear, UNKNOWN("fixture"), 100).value, "unknown"); assert.equal(combineCamera(clear, clear, 100).value, "inactive");
 });
+test("camera combination keeps the newest actual positive observation timestamp", () => {
+    const old = { value: "active" as const, at: 100, scope: "fixture", reason: "capture" };
+    const newer = { ...old, at: 200 };
+    assert.equal(combineCamera(old, UNKNOWN("local"), 300).at, 100);
+    assert.equal(combineCamera(old, { ...newer, value: "inactive" }, 300).at, 100);
+    assert.equal(combineCamera(old, newer, 300).at, 200);
+    assert.equal(combineCamera(old, UNKNOWN("local"), 10200).value, "unknown");
+});
 
 test("PipeWire restart cannot clear capture by reusing node IDs", () => {
     const d = new PipeWireDetector(); d.parse(JSON.stringify([core, camera(), consumer, link]), 1);

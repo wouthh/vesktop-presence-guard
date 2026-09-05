@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
@@ -64,9 +64,21 @@ export function verifyWiring(c) {
     const rolledBack = rollbackRecord(c);
     for (const [key, backup, receipt] of [["mainLauncher", "main-launcher", "installed-launcher.sha256"], ["updater", "updater", "installed-updater.sha256"]]) {
         const record = join(c.ledger, receipt);
+        if (key === "updater" && !existsSync(record)) throw Error("required_updater_receipt_missing");
         const expected = existsSync(record) && !(rolledBack && key === "mainLauncher") ? readFileSync(record, "utf8").trim() : hash(readFileSync(join(c.ledger, "backups", backup)));
         if (hash(readFileSync(c[key])) !== expected) throw Error(`${key}_drift`);
     }
+}
+export function holdsUpdaterLock(path) {
+    const target = lstatSync(path);
+    if (!target.isFile() || target.isSymbolicLink()) return false;
+    return readdirSync("/proc/self/fdinfo").some(fd => {
+        try {
+            const stat = fstatSync(Number(fd));
+            if (stat.dev !== target.dev || stat.ino !== target.ino) return false;
+            return new RegExp(`^lock:\\s+\\d+: FLOCK\\s+ADVISORY\\s+WRITE\\s+${process.pid}\\s`, "m").test(readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"));
+        } catch { return false; /* Descriptor closed during inspection. */ }
+    });
 }
 function backupHashes(c) {
     const result = {};
@@ -180,7 +192,8 @@ export async function main(args) {
     if (!args.includes("--config") || !path) throw Error("use --config with an owner-only installation descriptor");
     const c = descriptor(resolve(path)), dry = args.includes("--dry-run");
     const locked = args.includes("--locked");
-    const underLock = (childArgs = args) => { mkdirSync(dirname(c.updaterLock), { recursive: true, mode: 0o700 }); return execFileSync("/usr/bin/flock", ["-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), ...childArgs, "--locked"], { stdio: "inherit" }); };
+    if (locked && !holdsUpdaterLock(c.updaterLock)) throw Error("updater_lock_not_held");
+    const underLock = (childArgs = args) => { mkdirSync(dirname(c.updaterLock), { recursive: true, mode: 0o700 }); return execFileSync("/usr/bin/flock", ["--no-fork", "-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), ...childArgs, "--locked"], { stdio: "inherit" }); };
     if (action === "inspect") return console.log(JSON.stringify(inspect(c), null, 2));
     if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(stage(project, c.vencordRoot, dry), null, 2)); }
     if (action === "prepare") {
