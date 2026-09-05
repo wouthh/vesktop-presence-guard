@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { regularBytes } from "./regular-file.mjs";
+import { recoverStage, replaceStage } from "./stage-transaction.mjs";
 export const UPSTREAM = "0e40e433d7aa9168f656aba733d01e761b7ca8ca";
 export const hash = value => createHash("sha256").update(value).digest("hex");
 export function inventory(root) {
+    const stat = lstatSync(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe_inventory_root");
     const result = {};
     function visit(directory, prefix = "") {
         for (const name of readdirSync(directory).sort()) {
@@ -32,24 +36,28 @@ export function verifyStaged(project, destination, commit) {
     if (m.version !== 1 || m.commit !== commit || m.upstream !== UPSTREAM || m.sourceHash !== hash(JSON.stringify(canonical)) || JSON.stringify(m.files) !== JSON.stringify(expected) || JSON.stringify(actual) !== JSON.stringify(expected)) throw Error("staging_not_canonical_reviewed_source");
     return m;
 }
-export function stage(project, vencord, dryRun = false) {
+export function stage(project, vencord, dryRun = false, io = fs) {
     const gitRoot = execFileSync("git", ["-C", vencord, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
     if (resolve(gitRoot) !== resolve(vencord)) throw Error("staging_requires_vencord_git_root");
     const gitDirectory = execFileSync("git", ["-C", vencord, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
     // Resolve only the Git directory: --git-path canonicalizes a symlink at the receipt itself.
     const receiptPath = join(gitDirectory, "presence-guard-stage.json");
     const destination = join(resolve(vencord), "src/userplugins/presenceGuard");
+    recoverStage(destination, receiptPath, inventory, dryRun, io);
     const commit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const source = join(project, "src"), files = inventory(source);
     const sourceHash = hash(JSON.stringify(files));
+    const previous = { files: null, receipt: null };
     if (existsSync(destination)) {
         if (lstatSync(destination).isSymbolicLink()) throw Error("unexpected_staging_symlink");
         const marker = join(destination, ".presence-guard-stage.json");
         if (!existsSync(marker)) throw Error("unowned_staging_directory");
         const markerBytes = regularBytes(marker), old = JSON.parse(markerBytes), actual = inventory(destination);
+        previous.files = { ...actual };
         if (existsSync(receiptPath)) {
             if (lstatSync(receiptPath).isSymbolicLink()) throw Error("staging_receipt_symlink");
-            const receipt = JSON.parse(regularBytes(receiptPath, "utf8"));
+            previous.receipt = regularBytes(receiptPath, "utf8");
+            const receipt = JSON.parse(previous.receipt);
             if (receipt.version !== 1 || receipt.markerHash !== hash(markerBytes) || receipt.commit !== old.commit || receipt.sourceHash !== old.sourceHash) throw Error("staging_receipt_drift");
         } else {
             // A legacy tree may be attested only when every byte matches current canonical source.
@@ -68,15 +76,14 @@ export function stage(project, vencord, dryRun = false) {
     if (!receiptParent.isDirectory() || receiptParent.isSymbolicLink() || !(receiptParent.mode & 0o222)) throw Error("staging_receipt_parent_not_writable");
     accessSync(dirname(receiptPath), constants.W_OK);
     if (dryRun) return { destination, commit, sourceHash, files: Object.keys(files).length };
-    if (existsSync(destination)) rmSync(destination, { recursive: true }); // Exact, verified, generated tree only.
-    mkdirSync(destination, { recursive: true });
-    cpSync(source, destination, { recursive: true, errorOnExist: true });
-    writeFileSync(join(destination, "buildInfo.ts"), buildInfo(source, commit));
-    const staged = inventory(destination);
-    const manifest = { version: 1, commit, upstream: UPSTREAM, sourceHash, files: staged };
-    const markerBytes = JSON.stringify(manifest, null, 2);
-    writeFileSync(join(destination, ".presence-guard-stage.json"), markerBytes, { mode: 0o600 });
-    writeFileSync(receiptPath, JSON.stringify({ version: 1, markerHash: hash(markerBytes), commit, sourceHash }), { mode: 0o600 });
-    if (hash(JSON.stringify(inventory(source))) !== sourceHash) throw Error("canonical_source_changed_during_staging");
+    replaceStage(destination, receiptPath, inventory, temporary => {
+        io.cpSync(source, temporary, { recursive: true, errorOnExist: true });
+        io.writeFileSync(join(temporary, "buildInfo.ts"), buildInfo(source, commit));
+        const manifest = { version: 1, commit, upstream: UPSTREAM, sourceHash, files: inventory(temporary) };
+        const markerBytes = JSON.stringify(manifest, null, 2);
+        io.writeFileSync(join(temporary, ".presence-guard-stage.json"), markerBytes, { mode: 0o600 });
+        if (hash(JSON.stringify(inventory(source))) !== sourceHash) throw Error("canonical_source_changed_during_staging");
+        return JSON.stringify({ version: 1, markerHash: hash(markerBytes), commit, sourceHash });
+    }, previous, io);
     return { destination, commit, sourceHash, files: Object.keys(files).length };
 }

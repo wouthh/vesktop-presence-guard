@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFileSync } from "node:child_process";
-import { accessSync, chmodSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
-import { regularBytes } from "./regular-file.mjs";
+import { regularBytes, descriptorBytes } from "./regular-file.mjs";
 import { compileHelper } from "./helper-build.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -74,18 +74,33 @@ export function verifyWiring(c) {
     if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json"))) modes = pinBaseline(c).modes;
     else { backupHashes(c); modes = originalModes(c); }
     for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o777) !== mode) throw Error(`${key}_mode_drift`);
-    return { launcherMode: modes["main-launcher"] };
+    return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
 }
-export function holdsUpdaterLock(path) {
+export function updaterLockDescriptor(path) {
     const target = lstatSync(path);
-    if (!target.isFile() || target.isSymbolicLink()) return false;
-    return readdirSync("/proc/self/fdinfo").some(fd => {
+    if (!target.isFile() || target.isSymbolicLink()) return undefined;
+    return readdirSync("/proc/self/fdinfo").find(fd => {
         try {
             const stat = fstatSync(Number(fd));
             if (stat.dev !== target.dev || stat.ino !== target.ino) return false;
             return new RegExp(`^lock:\\s+\\d+: FLOCK\\s+ADVISORY\\s+WRITE\\s+${process.pid}\\s`, "m").test(readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"));
         } catch { return false; /* Descriptor closed during inspection. */ }
     });
+}
+export const holdsUpdaterLock = path => updaterLockDescriptor(path) !== undefined;
+export function runUpdater(c, action, execute = execFileSync) {
+    if (!["rebuild", "activate"].includes(action)) throw Error("unsupported_updater_action");
+    const lock = updaterLockDescriptor(c.updaterLock);
+    if (lock === undefined) throw Error("updater_lock_not_held");
+    const wiring = verifyWiring(c);
+    const fd = openSync(c.updater, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+        const expected = regularBytes(join(c.ledger, "installed-updater.sha256"), "utf8", 128).trim();
+        if (hash(descriptorBytes(fd)) !== expected || (fstatSync(fd).mode & 0o777) !== wiring.updaterMode) throw Error("updater_descriptor_drift");
+        // Linux preserves these inherited descriptors through the script's shebang.
+        // The reviewed updater validates FD 4 against its lock before accepting it.
+        return execute("/proc/self/fd/3", [action], { stdio: ["inherit", "inherit", "inherit", fd, Number(lock)], env: { ...process.env, PRESENCE_GUARD_LOCK_FD: "4" } });
+    } finally { closeSync(fd); }
 }
 function backupHashes(c) {
     const result = {};
@@ -217,13 +232,12 @@ export async function main(args) {
     if (action === "inspect") return console.log(JSON.stringify(inspect(c), null, 2));
     if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(stage(project, c.vencordRoot, dry), null, 2)); }
     if (action === "prepare") {
+        if (!dry && !locked) return underLock();
         verifyWiring(c); // Authenticate the executable and mode before staging or running it.
         if (dry) return console.log(JSON.stringify(stage(project, c.vencordRoot, true)));
-        execFileSync(process.execPath, [fileURLToPath(import.meta.url), "stage", "--config", path], { stdio: "inherit" });
-        verifyWiring(c);
-        execFileSync(c.updater, ["rebuild"], { stdio: "inherit" }); return;
+        console.log(JSON.stringify(stage(project, c.vencordRoot)));
+        runUpdater(c, "rebuild"); return;
     }
-    if (action === "pin" && locked) { verifyWiring(c); pinBaseline(c); return; }
     if (!["install", "update", "rollback", "uninstall"].includes(action)) throw Error("unknown_install_action");
     if (dry) {
         if (action === "install" || action === "update") { verifyWiring(c); planSettings(c); planHelper(c); }
@@ -232,18 +246,17 @@ export async function main(args) {
     if (processes().length) throw Error("vesktop_running_close_identified_profiles_gracefully_after_call_capture_preflight");
     const settingsPath = join(c.mainProfile, "settings/settings.json");
     if (action === "install" || action === "update") {
+        if (!locked) return underLock();
         const manifest = verifyCandidate(c);
-        // The maintained updater owns its own lock, candidate checks, backups and atomic activation.
+        // The maintained updater inherits the held lock and retains candidate/activation checks.
         const wiring = verifyWiring(c);
         const rolledBack = rollbackRecord(c);
-        if (rolledBack && !locked && realpathSync(join(c.vencordRoot, "dist")) !== rolledBack.dist) throw Error("rollback_build_drift");
+        if (rolledBack && realpathSync(join(c.vencordRoot, "dist")) !== rolledBack.dist) throw Error("rollback_build_drift");
         const settings = planSettings(c);
         const plan = planHelper(c);
         const helper = compileHelper(project);
-        if (!locked) {
-            underLock(["pin", "--config", path]);
-            execFileSync(c.updater, ["activate"], { stdio: "inherit" }); return underLock();
-        }
+        pinBaseline(c);
+        runUpdater(c, "activate");
         const active = realpathSync(join(c.vencordRoot, "dist"));
         for (const file of ["vencordDesktopMain.js", "vencordDesktopRenderer.js"]) {
             const text = regularBytes(join(active, file), "utf8");

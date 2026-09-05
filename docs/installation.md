@@ -33,7 +33,12 @@ all existing custom plugins, and protect the release named in
 in the required `installed-updater.sha256` receipt in the ledger; an original
 unextended updater is not accepted as a substitute. This project does not publish or
 replace private updaters. The adapter's supported commands are `rebuild` and
-`activate`, using the existing lock and retained-release workflow.
+`activate`, using the existing lock and retained-release workflow. It must support
+the reviewed Linux descriptor handoff: validate `PRESENCE_GUARD_LOCK_FD=4` against
+the actual lock file and a held exclusive flock before retaining that descriptor
+instead of acquiring a second lock. A caller-supplied flag alone is insufficient.
+The installer holds the lock across verification, staging, updater execution and
+activation wiring, and executes the verified open file through descriptor 3.
 
 ```sh
 node scripts/install.mjs inspect --config "$PG_CONFIG"
@@ -48,12 +53,19 @@ and rejects changed or unowned staging trees. A separate receipt in the Vencord
 Git metadata pins the previous marker before any replacement; editing both source
 and its colocated marker cannot silently authorize deletion. Marker and receipt
 reads reject symlinks, FIFOs and oversized files without blocking.
-Receipt writability is checked before replacing the old staging tree. Legacy staging can
+Receipt writability is checked before replacing the old staging tree.
+A replacement is built and synced in a hidden sibling directory before changing
+the old tree. A bounded recovery record in Git metadata preserves both generations
+until the new tree and receipt are committed. A normal locked retry validates and
+recovers an interrupted transaction; a dry run reports recovery is required.
+Unexpected changes stop recovery without deleting them. An interrupted cleanup
+can leave hidden generated directories for later inspection; never remove
+unexplained directories to bypass a receipt failure. Legacy staging can
 be attested only when it matches current canonical source exactly. `prepare`
 checks updater provenance and executable modes before staging
-(including dry runs), then checks again immediately before invoking the updater.
-It stages under the updater lock, then asks the updater to build an isolated
-candidate without activation.
+(including dry runs). Preparation and updater invocation share one held lock;
+the updater inherits that lock and the verified executable descriptor.
+It builds an isolated candidate without activation.
 The canonical project gate and the full combined Vencord checks must pass first.
 Commit all source changes before installation; dirty or mismatched heads fail.
 Installation compiles the helper directly from that clean source and records its
