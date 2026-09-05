@@ -125,6 +125,8 @@ the helper build, and an isolated clone/build of the pinned public Vencord
 revision (network needed initially). An additional runtime variant test runs when
 GJS is installed and is explicitly skipped otherwise. Cached/generated files stay
 ignored.
+Privacy checks scan the staged Git blobs and working copies separately, reject
+non-regular source entries, and do not skip force-added generated artifacts.
 `pnpm test` runs focused tests. Local client compatibility can be checked without
 executing its code:
 

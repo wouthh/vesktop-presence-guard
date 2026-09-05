@@ -109,7 +109,8 @@ export class PresenceEngine {
         // A non-Online selection blocks acquisition while the old preference is Online.
         if (s.account && this.manualPending !== "unknown" && s.configured === this.manualPending) this.manualPending = null;
         if (!s.connected || !s.account || !s.capable) {
-            if (this.owner || this.pending || this.timer !== undefined) this.boundary("connection_or_capability_uncertain");
+            const becameUncertain = !this.previous || (this.previous.connected && !s.connected) || (this.previous.account && !s.account) || (this.previous.capable && !s.capable);
+            if (becameUncertain || this.owner || this.pending || this.timer !== undefined) this.boundary("connection_or_capability_uncertain");
         }
         const ownConfirmation = token !== undefined && token === this.pending && token.generation === this.generation && s.connected && s.capable && s.account && s.configured === token.target && s.effective === token.target;
         if (ownConfirmation) {

@@ -21,6 +21,10 @@ Before modifying executables, record their original numeric Unix modes in
 `backups/executable-modes.json`, with keys `main-launcher` and `updater` (for
 example, 448 represents mode 0700). The baseline authenticates this file and
 restores those modes; private backup copies may themselves stay mode 0600.
+This first implementation has no previously released installation format.
+Intermediate, unmerged development receipts are not a supported upgrade source;
+do not rewrite authenticated metadata or guess missing original modes to bypass
+a failure. Preserve it and use independently verified recovery evidence.
 The existing private updater needs a reviewed extension to include the exact
 PresenceGuard staging manifest, verify its hashes against canonical source,
 recheck candidate bundle hashes at activation, preserve its source alongside
@@ -85,7 +89,11 @@ For later updates, pull/review changes normally, run `pnpm check`, commit them,
 run `prepare`, gracefully close both profiles after the same call/capture check,
 and run `update` instead of `install`. Existing rule preferences are preserved.
 `inspect` and `--dry-run` do not activate, write settings, or terminate processes.
+Installation/update dry runs also check executable receipts and recorded modes.
 Unexpected source/launcher/updater/build drift stops the operation for review.
+Executable and receipt reads reject non-regular files without blocking. Both
+executable modes must match their authenticated records; an update cannot carry
+forward unexplained permission changes.
 The internal lock handoff verifies a kernel-reported exclusive lock on the exact
 updater lock file owned by the current process; a caller-supplied marker cannot
 bypass locking.

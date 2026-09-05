@@ -47,6 +47,14 @@ for (const boundary of ["reconnect", "account"]) test(`camera evidence must be o
     f.s.camera = combineCamera({ ...captured, at: f.now() }, UNKNOWN("local"), f.now()); f.engine.sample();
     await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
 });
+for (const unavailable of ["connected", "capable", "account"] as const) test(`${unavailable} uncertainty invalidates detector evidence even without pending ownership`, async () => {
+    const f = fixture({ idle: false }); f.s.camera.value = "active";
+    if (unavailable === "account") f.s.account = null; else f.s[unavailable] = false;
+    f.engine.sample(); await f.advance(1);
+    f.s.connected = f.s.capable = true; f.s.account = "synthetic"; f.engine.sample();
+    await f.advance(); assert.deepEqual(f.writes, []);
+    f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
+});
 test("observation-only never writes or acquires simulated ownership", async () => {
     const f = fixture({ idle: false, camera: false }); f.signal("inactive"); await f.advance(); f.signal("inactive", "active"); await f.advance();
     assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null); assert(f.history.some(e => e.kind === "simulation"));

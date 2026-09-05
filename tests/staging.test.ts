@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
 import { stage, verifyStaged, hash } from "../scripts/staging.mjs";
@@ -46,6 +47,7 @@ test("baseline pinning and wiring validation reject changed files", t => {
     for (const [path, backup] of [[c.mainLauncher, "main-launcher"], [c.updater, "updater"]]) { writeFileSync(path, "fixture"); writeFileSync(join(ledger, "backups", backup), "fixture"); }
     writeFileSync(join(ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
     writeFileSync(join(ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o700, updater: 0o750 }));
+    chmodSync(c.mainLauncher, 0o700); chmodSync(c.updater, 0o750);
     assert.deepEqual(pinBaseline(c), pinBaseline(c));
     assert.throws(() => verifyWiring(c), /required_updater_receipt_missing/);
     writeFileSync(join(ledger, "installed-updater.sha256"), hash("fixture"));
@@ -53,6 +55,8 @@ test("baseline pinning and wiring validation reject changed files", t => {
     writeFileSync(join(ledger, "installed.json"), "{}");
     assert.throws(() => verifyWiring(c), /required_launcher_receipt_missing/);
     writeFileSync(join(ledger, "installed-launcher.sha256"), hash("fixture")); verifyWiring(c);
+    chmodSync(c.mainLauncher, 0o777); assert.throws(() => verifyWiring(c), /mainLauncher_mode_drift/); chmodSync(c.mainLauncher, 0o700);
+    chmodSync(c.updater, 0o777); assert.throws(() => verifyWiring(c), /updater_mode_drift/); chmodSync(c.updater, 0o750);
     const umask = process.umask(0o077);
     try { restoreExecutables(c, pinBaseline(c)); } finally { process.umask(umask); }
     assert.equal(statSync(c.mainLauncher).mode & 0o777, 0o700); assert.equal(statSync(c.updater).mode & 0o777, 0o750);
@@ -76,6 +80,7 @@ test("verified rollback artifacts support reinstall using the original ledger", 
     writeFileSync(c.updater, "reviewed extension"); writeFileSync(join(c.ledger, "backups/updater"), "original updater");
     writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
     writeFileSync(join(c.ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o755, updater: 0o700 }));
+    chmodSync(c.mainLauncher, 0o755); chmodSync(c.updater, 0o700);
     const baseline = pinBaseline(c);
     writeFileSync(join(root, ".presence-guard/display-helper.mjs"), "verified helper");
     writeFileSync(join(native, "installation.json"), JSON.stringify({ version: 1, snapshot: join(root, ".presence-guard/display.json"), welcome: false }));
@@ -87,6 +92,28 @@ test("verified rollback artifacts support reinstall using the original ledger", 
     verifyWiring(c); assert(planHelper(c).launcher.includes("# PresenceGuard process-bound observer"));
     const settings = planSettings(c); assert.equal(settings.plugins.PresenceGuard.idle, false); assert.equal(settings.plugins.PresenceGuard.camera, false); assert.equal(settings.plugins.Existing.enabled, true);
     assert.equal(readFileSync(join(root, ".presence-guard/display-helper.mjs"), "utf8"), "verified helper");
+});
+for (const kind of ["fifo", "symlink"]) test(`wiring rejects ${kind} executables and receipts without blocking or following them`, t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-wiring-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, ledger: join(root, "ledger"), mainLauncher: join(root, "launcher"), updater: join(root, "updater") };
+    mkdirSync(join(c.ledger, "backups"), { recursive: true });
+    for (const [path, backup] of [[c.mainLauncher, "main-launcher"], [c.updater, "updater"]]) { writeFileSync(path, "fixture", { mode: 0o700 }); writeFileSync(join(c.ledger, "backups", backup), "fixture"); }
+    writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
+    writeFileSync(join(c.ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o700, updater: 0o700 }));
+    writeFileSync(join(c.ledger, "installed.json"), "{}");
+    const receipts = ["installed-launcher.sha256", "installed-updater.sha256"].map(name => join(c.ledger, name));
+    for (const path of receipts) writeFileSync(path, hash("fixture"), { mode: 0o600 });
+    verifyWiring(c);
+    const module = pathToFileURL(resolve("scripts/install.mjs")).href;
+    const script = `import { verifyWiring } from ${JSON.stringify(module)}; try { verifyWiring(JSON.parse(process.argv[1])); process.exitCode=1; } catch(e) { if(!/unsafe_regular_file|ELOOP/.test(e.message)) throw e; }`;
+    for (const path of [c.mainLauncher, c.updater, ...receipts]) {
+        const bytes = readFileSync(path), mode = statSync(path).mode & 0o777;
+        unlinkSync(path);
+        if (kind === "fifo") execFileSync("mkfifo", [path]);
+        else { const copy = join(root, "same-bytes"); writeFileSync(copy, bytes); symlinkSync(copy, path); }
+        execFileSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(c)], { timeout: 3000, stdio: "pipe" });
+        unlinkSync(path); writeFileSync(path, bytes, { mode }); verifyWiring(c);
+    }
 });
 test("helper lease expires, rejects future/malformed data, and identity handles spaced process names", () => {
     assert(leaseActive({ enabled: true, at: 100 }, 101)); assert.equal(leaseActive({ enabled: true, at: 102 }, 101), false);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -27,4 +27,15 @@ test("privacy gate rejects the stored target of a tracked symlink", t => {
     const harmless = join(root, "ordinary.txt"); writeFileSync(harmless, "harmless contents");
     symlinkSync(harmless, join(root, "link")); execFileSync("git", ["-C", root, "add", "link"]);
     assert.throws(() => execFileSync(process.execPath, [scanner], { cwd: root, stdio: "pipe" }), /non-regular source/);
+    unlinkSync(join(root, "link")); writeFileSync(join(root, "link"), "harmless replacement");
+    assert.throws(() => execFileSync(process.execPath, [scanner], { cwd: root, stdio: "pipe" }), /non-regular source/);
+});
+for (const privateCopy of ["index", "working"]) test(`privacy gate checks the ${privateCopy} copy despite a harmless other copy`, t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-privacy-"));
+    t.after(() => rmSync(root, { recursive: true, force: true })); execFileSync("git", ["init", "-q", root]);
+    const path = join(root, "source.txt"), secret = "ghp_" + "x".repeat(32);
+    writeFileSync(path, privateCopy === "index" ? secret : "harmless");
+    execFileSync("git", ["-C", root, "add", "source.txt"]);
+    writeFileSync(path, privateCopy === "index" ? "harmless" : secret);
+    assert.throws(() => execFileSync(process.execPath, [scanner], { cwd: root, stdio: "pipe" }), /privacy pattern/);
 });
