@@ -14,6 +14,7 @@ import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, Us
 import { BUILD_INFO } from "./buildInfo";
 import { cameraSnapshot, PipeWireDetector } from "./core/camera";
 import { DisplayDetector } from "./core/display";
+import { describeDisplayFacts } from "./core/displayFacts";
 import { PresenceEngine } from "./core/engine";
 import { clearHistoryView, loadHistoryView, retain } from "./core/history";
 import { statusMutator } from "./core/mutator";
@@ -152,6 +153,7 @@ function Panel() {
         <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Safety hooks: {patchError}.</Forms.FormText>
         <Forms.FormText>Local storage: {persistenceHealth.summary}.</Forms.FormText>
         <Forms.FormText>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Forms.FormText>
+        <Forms.FormText>{describeDisplayFacts(s.display.facts)}. These facts do not prove the blanking cause.</Forms.FormText>
         <Forms.FormText>Camera: {s.camera.value} — {s.camera.reason}. {s.camera.scope}. Last sample: {s.camera.at ? new Date(s.camera.at).toLocaleTimeString() : "none"}.</Forms.FormText>
         <Forms.FormText>PipeWire: {pwCamera.value} — {pwCamera.reason}. Vesktop: {localCamera.value} — {localCamera.reason}.</Forms.FormText>
         <Forms.FormText>Local presence is not independent proof of what other sessions or users see. Simulations never change status.</Forms.FormText>
@@ -164,7 +166,7 @@ function Panel() {
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>
-        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}</Forms.FormText><Forms.FormText>Display {e.display.value}: {e.display.reason} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
+        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}</Forms.FormText><Forms.FormText>Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
     </div>;
 }
 function openPanel() { openModal(props => <Modal {...props} title="PresenceGuard"><Panel /></Modal>); }

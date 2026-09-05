@@ -5,6 +5,7 @@
  */
 
 // SPDX-License-Identifier: GPL-3.0-or-later
+import { displayFacts } from "./displayFacts";
 import { type Signal,UNKNOWN } from "./types";
 export interface DisplayObservation {
     at: number;
@@ -24,6 +25,11 @@ export class DisplayDetector {
     private ambiguousBlanking = false;
     reset() { this.previous = null; this.qualifying = false; this.ambiguousBlanking = false; }
     observe(o: DisplayObservation | null): Signal {
+        const facts = o && Number.isFinite(o.idleMs) && o.idleMs >= 0 ? displayFacts({ ...o, idleThresholdReached: o.thresholdMs > 0 && o.idleMs >= o.thresholdMs }) : undefined;
+        const result = this.evaluate(o);
+        return facts ? { ...result, facts } : result;
+    }
+    private evaluate(o: DisplayObservation | null): Signal {
         const scope = "GNOME session; inactivity cause inferred";
         if (!o || ![o.at, o.idleMs, o.thresholdMs, o.power, o.monitors].every(Number.isFinite) || typeof o.locked !== "boolean" || typeof o.shieldActive !== "boolean" || typeof o.suspended !== "boolean" || typeof o.topology !== "string" || typeof o.provider !== "string" || o.topology.length > 2048 || o.provider.length > 128 || o.idleMs < 0 || o.monitors < 1 || !o.topology || !o.provider || ![0, 1, 2, 3].includes(o.power)) {
             this.reset(); return UNKNOWN(scope, "display_unavailable");

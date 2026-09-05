@@ -16,7 +16,7 @@ function durableFile(path, bytes, io) {
     catch (e) { io.unlinkSync(path); throw e; }
     finally { io.closeSync(fd); }
 }
-const paths = (destination, receipt, id) => ({ next: join(dirname(destination), `.presence-guard-next-${id}`), previous: join(dirname(destination), `.presence-guard-previous-${id}`), receiptNext: `${receipt}.${id}.next`, journal: `${receipt}.transaction` });
+const paths = (_destination, receipt, id) => ({ next: join(dirname(receipt), `.presence-guard-next-${id}`), previous: join(dirname(receipt), `.presence-guard-previous-${id}`), receiptNext: `${receipt}.${id}.next`, journal: `${receipt}.transaction`, journalNext: `${receipt}.transaction.${id}.next` });
 
 // Called only under the staging/updater lock. Recovery validates all generations
 // before removing any generated tree; unexplained drift remains untouched.
@@ -57,8 +57,10 @@ export function recoverStage(destination, receipt, inventory, dry = false, io = 
 export function replaceStage(destination, receipt, inventory, build, expected, io = fs) {
     const id = randomUUID(), p = paths(destination, receipt, id);
     io.mkdirSync(dirname(destination), { recursive: true });
+    if (fs.statSync(dirname(destination)).dev !== fs.statSync(dirname(receipt)).dev) throw Error("staging_requires_same_filesystem_git_metadata");
     io.mkdirSync(p.next, { mode: 0o700 });
     let journalReady = false;
+    let journalImageReady = false;
     try {
         const nextReceipt = build(p.next);
         const nextFiles = inventory(p.next);
@@ -74,10 +76,11 @@ export function replaceStage(destination, receipt, inventory, build, expected, i
         const previousFiles = present(destination) ? inventory(destination) : null;
         const previousReceipt = present(receipt) ? regularBytes(receipt, "utf8") : null;
         if (!equal(previousFiles, expected.files) || previousReceipt !== expected.receipt) throw Error("staging_changed_during_preparation");
-        durableFile(p.journal, JSON.stringify({ version: 1, id, nextFiles, previousFiles, nextReceipt, previousReceipt }), io);
+        durableFile(p.journalNext, JSON.stringify({ version: 1, id, nextFiles, previousFiles, nextReceipt, previousReceipt }), io); journalImageReady = true;
+        io.renameSync(p.journalNext, p.journal);
         syncDirectory(dirname(receipt), io); journalReady = true;
-        if (previousFiles) io.renameSync(destination, p.previous);
-        io.renameSync(p.next, destination); syncDirectory(dirname(destination), io);
+        if (previousFiles) { io.renameSync(destination, p.previous); syncDirectory(dirname(destination), io); syncDirectory(dirname(receipt), io); }
+        io.renameSync(p.next, destination); syncDirectory(dirname(destination), io); syncDirectory(dirname(receipt), io);
         io.renameSync(p.receiptNext, receipt); syncDirectory(dirname(receipt), io);
         recoverStage(destination, receipt, inventory, false, io);
     } catch (error) {
@@ -85,6 +88,7 @@ export function replaceStage(destination, receipt, inventory, build, expected, i
         if (!journalReady && !present(p.journal)) {
             if (present(p.next)) io.rmSync(p.next, { recursive: true });
             if (present(p.receiptNext)) io.unlinkSync(p.receiptNext);
+            if (journalImageReady && present(p.journalNext)) io.unlinkSync(p.journalNext);
         }
         throw error;
     }

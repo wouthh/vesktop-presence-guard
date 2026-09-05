@@ -8,11 +8,21 @@
 export type Status = "online" | "idle" | "dnd" | "invisible" | "offline" | "unknown";
 export type Rule = "idle" | "camera";
 export type SignalValue = "active" | "inactive" | "unknown";
+export interface DisplayFacts {
+    power: number;
+    locked: boolean;
+    shieldActive: boolean;
+    suspended: boolean;
+    idleThresholdReached: boolean;
+    thresholdMs: number;
+    monitors: number;
+}
 export interface Signal {
     value: SignalValue;
     at: number;
     reason: string;
     scope: string;
+    facts?: DisplayFacts; // Observations only; never authorize a status write.
 }
 export interface Snapshot {
     account: string | null; // Process-local only; never copied into history.

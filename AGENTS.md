@@ -16,6 +16,7 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Never acquire status ownership except from positively confirmed Online.
 - Manual selections, including the same value and duration edits, revoke
   ownership before asynchronous work. Unknown never means cleared.
+- Keep raw display facts distinct from inferred eligibility and status changes.
 - Ownership is process-local. Do not restore it from history or adopt native idle.
 - Observe only the signed-in account and local display/camera state. No media
   acquisition, telemetry, network control listener, or other-user tracking.

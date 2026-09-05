@@ -9,6 +9,7 @@ import { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as
 import { lockedStage, stageLock } from "./locked-stage.mjs";
 import { finishIntegration, pendingIntegration, prepareIntegration } from "./integration-transaction.mjs";
 import { compileHelper } from "./helper-build.mjs";
+import { publishBaseline } from "./baseline-publication.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = path => JSON.parse(regularBytes(path, "utf8"));
@@ -75,7 +76,7 @@ export function verifyWiring(c) {
         if (!/^[a-f0-9]{64}$/.test(expected) || hash(regularBytes(c[key])) !== expected) throw Error(`${key}_drift`);
     }
     let modes;
-    if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json"))) modes = pinBaseline(c).modes;
+    if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json")) || statOrNull(join(c.ledger, "baseline.sha256.publication"))) modes = pinBaseline(c).modes;
     else { backupHashes(c); modes = originalModes(c); }
     for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o7777) !== mode) throw Error(`${key}_mode_drift`);
     return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
@@ -144,6 +145,14 @@ export function preflightRollback(c) {
     accessSync(c.vencordRoot, constants.W_OK);
     return readSettings(c);
 }
+export function verifyCompletedRollback(c, currentSettings, baseline) {
+    const record = rollbackRecord(c);
+    if (!record || record.dist !== baseline.dist) throw Error("rollback_receipt_drift");
+    const before = read(join(c.ledger, "backups/main-plugins"));
+    if (Object.hasOwn(currentSettings.plugins, "PresenceGuard") !== Object.hasOwn(before.plugins, "PresenceGuard") || JSON.stringify(currentSettings.plugins.PresenceGuard) !== JSON.stringify(before.plugins.PresenceGuard)) throw Error("rollback_settings_drift");
+    const lease = read(join(c.mainProfile, "PresenceGuard/lease.json"));
+    if (lease?.enabled !== false || !Number.isFinite(lease.at)) throw Error("rollback_lease_drift");
+}
 export function restoreExecutables(c, baseline) {
     atomic(c.mainLauncher, regularBytes(join(c.ledger, "backups/main-launcher")), baseline.modes["main-launcher"]);
     atomic(c.updater, regularBytes(join(c.ledger, "backups/updater")), baseline.modes.updater);
@@ -155,12 +164,18 @@ export function pinBaseline(c) {
     if (!existsSync(path) && existsSync(join(c.ledger, "installed.json"))) throw Error("installed_baseline_missing");
     mkdirSync(root, { recursive: true, mode: 0o700 });
     writableTarget(path, true);
-    if (!existsSync(path)) {
-        if (existsSync(anchor)) throw Error("baseline_manifest_missing");
+    const initial = () => {
         const dist = realpathSync(join(c.vencordRoot, "dist"));
         if (!dist.startsWith(`${realpathSync(join(c.vencordRoot, ".wout-releases"))}/`) || !dist.endsWith("/dist")) throw Error("baseline_not_retained_release");
-        const bytes = JSON.stringify({ dist, files: inventory(dist), backups: backupHashes(c), modes: originalModes(c) });
-        atomic(path, bytes); atomic(anchor, `${hash(bytes)}\n`);
+        return { dist, files: inventory(dist), backups: backupHashes(c), modes: originalModes(c) };
+    };
+    const validateInitial = candidate => {
+        if (existsSync(join(c.ledger, "installed.json")) || JSON.stringify(candidate) !== JSON.stringify(initial())) throw Error("initial_baseline_state_changed");
+    };
+    if (statOrNull(`${anchor}.publication`)) publishBaseline(path, anchor, undefined, validateInitial);
+    if (!existsSync(path)) {
+        if (existsSync(anchor)) throw Error("baseline_manifest_missing");
+        publishBaseline(path, anchor, JSON.stringify(initial()), validateInitial);
     }
     if (!existsSync(anchor) || lstatSync(anchor).size > 128 || lstatSync(path).size > 1024 * 1024 || regularBytes(anchor, "utf8").trim() !== hash(regularBytes(path))) throw Error("baseline_anchor_drift");
     const baseline = read(path);
@@ -305,6 +320,7 @@ export async function main(args) {
     const currentSettings = preflightRollback(c);
     const baseline = pinBaseline(c);
     if (existsSync(rolledBack)) {
+        verifyCompletedRollback(c, currentSettings, baseline);
         if (realpathSync(join(c.vencordRoot, "dist")) !== baseline.dist || hash(regularBytes(c.mainLauncher)) !== hash(regularBytes(join(c.ledger, "backups/main-launcher"))) || hash(regularBytes(c.updater)) !== hash(regularBytes(join(c.ledger, "backups/updater"))) || (lstatSync(c.mainLauncher).mode & 0o7777) !== baseline.modes["main-launcher"] || (lstatSync(c.updater).mode & 0o7777) !== baseline.modes.updater) throw Error("rollback_drift");
         return console.log("Previous integration is already restored; history retained.");
     }

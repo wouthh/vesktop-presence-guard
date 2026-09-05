@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PresenceEngine } from "../src/core/engine";
+import { DisplayDetector } from "../src/core/display";
 import { clearHistoryView, loadHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
 import { combineCamera } from "../src/core/camera";
@@ -58,6 +59,25 @@ for (const unavailable of ["connected", "capable", "account"] as const) test(`${
 test("observation-only never writes or acquires simulated ownership", async () => {
     const f = fixture({ idle: false, camera: false }); f.signal("inactive"); await f.advance(); f.signal("inactive", "active"); await f.advance();
     assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null); assert(f.history.some(e => e.kind === "simulation"));
+});
+test("baseline records ambiguous power-save facts and native Idle separately without tick spam or writes", async () => {
+    const f = fixture({ idle: false, camera: false }), detector = new DisplayDetector();
+    const observation = { at: f.now(), power: 0, locked: false, shieldActive: false, suspended: false, idleMs: 298000, thresholdMs: 300000, monitors: 1, topology: "synthetic", provider: "synthetic" };
+    f.s.display = detector.observe(observation); f.engine.sample();
+    await f.advance(2000); Object.assign(observation, { at: f.now(), locked: true, shieldActive: true, power: 3, idleMs: 300000 });
+    f.s.display = detector.observe(observation); f.engine.sample();
+    assert.equal(f.s.display.value, "unknown");
+    const power = f.history.find(e => e.reason === "display_facts_observed_cause_not_proven");
+    assert.equal(power?.display.facts?.power, 3); assert.equal(power?.display.facts?.locked, true);
+    assert.equal(power?.status, "online"); assert.equal(power?.source, "unknown");
+    const count = f.history.length;
+    for (let i = 0; i < 4; i++) { await f.advance(2000); Object.assign(observation, { at: f.now(), idleMs: observation.idleMs + 2000 }); f.s.display = detector.observe(observation); f.engine.sample(); }
+    assert.equal(f.history.length, count);
+    f.s.effective = "idle"; f.s.nativeIdle = true; f.engine.sample("native/client");
+    const idle = f.history.find(e => e.reason === "configured_online_observed_native_idle");
+    assert.equal(idle?.configured, "online"); assert.equal(idle?.display.facts?.power, 3);
+    assert.equal(idle?.kind, "observation"); assert.equal(idle?.owned, false);
+    assert.deepEqual(f.writes, []); assert(!f.history.some(e => e.kind === "request" || e.kind === "confirmation"));
 });
 for (const value of ["idle", "dnd", "invisible", "offline", "unknown"] as Status[]) test(`non-owned ${value} remains untouched`, async () => {
     const f = fixture(); f.s.configured = f.s.effective = value; f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);

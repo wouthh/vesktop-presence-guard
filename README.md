@@ -91,6 +91,10 @@ Discord changes independently; runtime patch checks fail closed.
   activity is kept distinct from locking and conservatively treated as ambiguous
   when it precedes blanking. The lock hint must come from the current user's
   active Wayland session; missing or unsupported session state stays Unknown. Return requires powered-on displays and recent actual activity.
+  History retains power mode, lock, shield, suspend, threshold-crossed and monitor-count
+  facts even when the inactivity cause is Unknown. Fact transitions are recorded
+  separately from status changes; polling timestamps and changing idle counters
+  do not create repeated events. No monitor or session identifiers are retained.
   Window visibility is not used. The helper collects only during a fresh plugin
   lease and exits with its owning main launch process. It publishes a bounded
   snapshot through an existing read-only build-directory grant; no added Flatpak

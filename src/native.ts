@@ -10,6 +10,7 @@ import { app, dialog, IpcMainInvokeEvent } from "electron";
 import { lstat, mkdir, writeFile } from "fs/promises";
 import { isAbsolute, join } from "path";
 
+import { displayFacts } from "./core/displayFacts";
 import { retain } from "./core/history";
 import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
 import { HistoryEvent, status } from "./core/types";
@@ -39,6 +40,7 @@ function validEvent(event: unknown): event is HistoryEvent {
         && [e.previous, e.status, e.configured, e.aggregate].every(s => status(s) === s)
         && typeof e.reason === "string" && e.reason.length <= 240
         && [e.display, e.camera].every(s => s && ["active", "inactive", "unknown"].includes(s.value) && Number.isFinite(s.at) && typeof s.reason === "string" && s.reason.length <= 240 && typeof s.scope === "string" && s.scope.length <= 180)
+        && (e.display.facts === undefined || displayFacts(e.display.facts) !== undefined)
         && JSON.stringify(e).length < 4096;
 }
 async function history(): Promise<HistoryEvent[]> {
@@ -59,7 +61,7 @@ export async function appendHistory(_: IpcMainInvokeEvent, event: HistoryEvent) 
     // Reconstruct fields to discard unknown renderer-supplied properties.
     const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, display, camera } = event;
     const signal = (s: typeof display) => ({ at: s.at, value: s.value, reason: s.reason, scope: s.scope });
-    return serial(async () => atomic("history.json", retain([...(await history()), { at, kind, source, previous, status: current, configured, aggregate, reason, owned, display: signal(display), camera: signal(camera) }], Date.now())));
+    return serial(async () => atomic("history.json", retain([...(await history()), { at, kind, source, previous, status: current, configured, aggregate, reason, owned, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
 }
 export async function clearHistory(_: IpcMainInvokeEvent) { return serial(() => atomic("history.json", [])); }
 export async function exportHistory(_: IpcMainInvokeEvent) {

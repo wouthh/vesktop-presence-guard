@@ -126,6 +126,9 @@ export class PresenceEngine {
             const actualSource = ownConfirmation ? "plugin" : source;
             this.emit("observation", s.configured === "online" && s.effective === "idle" && s.nativeIdle === true ? "configured_online_observed_native_idle" : "status_observed", actualSource, s);
         }
+        if (this.previous && JSON.stringify(s.display.facts) !== JSON.stringify(this.previous.display.facts)) {
+            this.emit("observation", "display_facts_observed_cause_not_proven", "unknown", s, s.effective);
+        }
         this.previous = s;
         this.consider();
     }

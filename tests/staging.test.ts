@@ -9,7 +9,7 @@ import { test } from "node:test";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
 import { stage, verifyStaged, hash, inventory } from "../scripts/staging.mjs";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
-import { restoreMain, pinBaseline, verifyWiring, planHelper, planSettings, restoreExecutables } from "../scripts/install.mjs";
+import { restoreMain, pinBaseline, verifyWiring, planHelper, planSettings, restoreExecutables, verifyCompletedRollback } from "../scripts/install.mjs";
 import { leaseActive, startIdentity } from "../helper/lifetime";
 
 test("actual staging dry run, repeat install and drift rejection preserve other plugins", t => {
@@ -96,6 +96,14 @@ test("verified rollback artifacts support reinstall using the original ledger", 
     verifyWiring(c); assert(planHelper(c).launcher.includes("# PresenceGuard process-bound observer"));
     const settings = planSettings(c); assert.equal(settings.plugins.PresenceGuard.idle, false); assert.equal(settings.plugins.PresenceGuard.camera, false); assert.equal(settings.plugins.Existing.enabled, true);
     assert.equal(readFileSync(join(root, ".presence-guard/display-helper.mjs"), "utf8"), "verified helper");
+    const current = JSON.parse(readFileSync(join(c.mainProfile, "settings/settings.json"), "utf8"));
+    assert.throws(() => verifyCompletedRollback(c, current, baseline), /rollback_settings_drift/);
+    delete current.plugins.PresenceGuard;
+    const lease = join(native, "lease.json"); writeFileSync(lease, JSON.stringify({ enabled: false, at: 0 }));
+    verifyCompletedRollback(c, current, baseline);
+    writeFileSync(lease, JSON.stringify({ enabled: true, at: 0 })); assert.throws(() => verifyCompletedRollback(c, current, baseline), /rollback_lease_drift/);
+    writeFileSync(lease, JSON.stringify({ enabled: false, at: 0 }));
+    writeFileSync(join(c.ledger, "rolled-back.json"), "{"); assert.throws(() => verifyCompletedRollback(c, current, baseline));
 });
 for (const kind of ["fifo", "symlink"]) test(`wiring rejects ${kind} executables and receipts without blocking or following them`, t => {
     const root = mkdtempSync(join(tmpdir(), "presence-guard-wiring-")); t.after(() => rmSync(root, { recursive: true, force: true }));

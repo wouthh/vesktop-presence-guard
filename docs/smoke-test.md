@@ -9,7 +9,10 @@ from the following human-triggered checks.
 
 1. Leave both rules off. Let the desktop become inactive and blank normally.
    Return normally and inspect/export history. Compare configured and effective
-   status and display snapshots. Any native Idle observation should have no
+   status and display snapshots. The raw display facts distinguish power-save mode
+   from lock/shield activity, even when automatic Idle remains Unknown. A
+   `display_facts_observed_cause_not_proven` entry records those facts, not a status
+   request or proof of what caused blanking. Any native Idle observation should have no
    preceding PresenceGuard request. Do not force Online to produce a test.
 2. When you naturally choose Online, enable Automatic Idle. Let normal desktop
    inactivity blank the screen, then return normally. Confirm one owned Idle and

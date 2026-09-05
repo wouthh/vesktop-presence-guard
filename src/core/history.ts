@@ -14,7 +14,7 @@ export function retain(events: HistoryEvent[], now: number): HistoryEvent[] {
 
 export function mergeHistory(persisted: HistoryEvent[], current: HistoryEvent[], now: number): HistoryEvent[] {
     const seen = new Set<string>();
-    const signal = (s: HistoryEvent["display"]) => [s.at, s.value, s.reason, s.scope];
+    const signal = (s: HistoryEvent["display"]) => [s.at, s.value, s.reason, s.scope, s.facts];
     const events = [...persisted, ...current].filter(e => {
         const key = JSON.stringify([e.at, e.kind, e.source, e.previous, e.status, e.configured, e.aggregate, e.reason, e.owned, signal(e.display), signal(e.camera)]);
         if (seen.has(key)) return false;
