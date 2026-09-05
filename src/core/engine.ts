@@ -31,12 +31,12 @@ export class PresenceEngine {
         this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, display: { ...s.display }, camera: { ...s.camera } });
     }
 
-    private invalidate() {
+    private invalidate(keepOwner = false) {
         this.generation++;
         if (this.timer !== undefined) this.clock.clear(this.timer);
         this.timer = undefined;
         this.pending = null;
-        this.owner = null;
+        if (!keepOwner) this.owner = null;
     }
 
     boundary(reason: string) {
@@ -63,10 +63,13 @@ export class PresenceEngine {
     configure(next: Options) {
         const disabling = (this.options.idle && !next.idle) || (this.options.camera && !next.camera);
         if (disabling) {
-            const ownerRule = this.owner?.rule ?? this.pending?.rule;
-            if ((ownerRule === "idle" && !next.idle) || (ownerRule === "camera" && !next.camera)) {
+            const disabled = (rule: Rule) => rule === "idle" ? !next.idle : !next.camera;
+            if (this.owner && disabled(this.owner.rule)) {
                 this.invalidate();
                 this.emit("boundary", "rule_disabled_status_left_unchanged", "plugin", this.adapter.read());
+            } else if (this.pending && disabled(this.pending.rule)) {
+                this.invalidate(true);
+                this.emit("skip", "pending_rule_disabled_owner_retained_if_matching", "plugin", this.adapter.read());
             } else if (this.timer !== undefined) {
                 this.clock.clear(this.timer); this.timer = undefined; this.generation++;
             }

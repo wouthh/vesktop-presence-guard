@@ -15,15 +15,17 @@ test("actual staging dry run, repeat install and drift rejection preserve other 
     const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
     const project = join(root, "project"), vc = join(root, "vencord"); mkdirSync(join(project, "src"), { recursive: true }); mkdirSync(join(vc, "src/userplugins/existing"), { recursive: true });
     writeFileSync(join(project, "src/buildInfo.ts"), "export const BUILD_INFO = {};\n"); writeFileSync(join(vc, "src/userplugins/existing/private.txt"), "synthetic unrelated plugin");
+    execFileSync("git", ["init", "-q", vc]);
     execFileSync("git", ["init", "-q", project]); execFileSync("git", ["-C", project, "add", "."]); execFileSync("git", ["-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
     const dry = stage(project, vc, true); assert.equal(dry.files, 1); assert.throws(() => readFileSync(join(dry.destination, "buildInfo.ts")));
     const a = stage(project, vc), b = stage(project, vc); assert.deepEqual(a, b);
     verifyStaged(project, a.destination, a.commit);
-    const manifestPath = join(a.destination, ".presence-guard-stage.json"), manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifestPath = join(a.destination, ".presence-guard-stage.json"), markerBytes = readFileSync(manifestPath, "utf8"), manifest = JSON.parse(markerBytes);
     const original = readFileSync(join(a.destination, "buildInfo.ts"), "utf8");
     writeFileSync(join(a.destination, "buildInfo.ts"), "tampered"); manifest.files["buildInfo.ts"] = hash("tampered"); writeFileSync(manifestPath, JSON.stringify(manifest));
     assert.throws(() => verifyStaged(project, a.destination, a.commit), /not_canonical/);
-    writeFileSync(join(a.destination, "buildInfo.ts"), original); manifest.files["buildInfo.ts"] = hash(original); writeFileSync(manifestPath, JSON.stringify(manifest)); assert.equal(readFileSync(join(vc, "src/userplugins/existing/private.txt"), "utf8"), "synthetic unrelated plugin");
+    assert.throws(() => stage(project, vc), /receipt_drift/); assert.equal(readFileSync(join(a.destination, "buildInfo.ts"), "utf8"), "tampered");
+    writeFileSync(join(a.destination, "buildInfo.ts"), original); manifest.files["buildInfo.ts"] = hash(original); writeFileSync(manifestPath, markerBytes); assert.equal(readFileSync(join(vc, "src/userplugins/existing/private.txt"), "utf8"), "synthetic unrelated plugin");
     writeFileSync(join(a.destination, "unexpected.txt"), "do not overwrite"); assert.throws(() => stage(project, vc), /drift/); assert.equal(readFileSync(join(a.destination, "unexpected.txt"), "utf8"), "do not overwrite");
 });
 test("rollback settings only restore the owned entry and are repeatable", () => {
@@ -53,6 +55,7 @@ test("staging CLI creates an absent updater runtime directory and remains repeat
     const mainProfile = join(root, "main"), altProfile = join(root, "alt"); mkdirSync(mainProfile); mkdirSync(altProfile);
     writeFileSync(join(mainProfile, "state.json"), JSON.stringify({ vencordDir: join(root, "dist") }));
     const c = { vencordRoot: root, mainProfile, altProfile, mainLauncher: join(root, "launcher"), updater: join(root, "updater"), ledger: join(root, "ledger"), updaterLock: join(root, "runtime/lock") };
+    execFileSync("git", ["init", "-q", root]);
     const config = join(root, "private.json"); writeFileSync(config, JSON.stringify(c), { mode: 0o600 });
     for (let i = 0; i < 2; i++) execFileSync(process.execPath, ["scripts/install.mjs", "stage", "--config", config], { stdio: "pipe" });
     assert.equal(readFileSync(c.updaterLock, "utf8"), ""); assert(readFileSync(join(root, "src/userplugins/presenceGuard/.presence-guard-stage.json"), "utf8").includes('"version": 1'));

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CameraTracks } from "../src/core/tracks";
 // @ts-expect-error Installation JavaScript is linted and tested directly.
-import { planHelper, planSettings } from "../scripts/install.mjs";
+import { planHelper, planSettings, preflightRollback } from "../scripts/install.mjs";
 // @ts-expect-error Build JavaScript is linted and tested directly.
 import { compileHelper } from "../scripts/helper-build.mjs";
 // @ts-expect-error Integration JavaScript is linted and tested directly.
@@ -49,4 +49,15 @@ test("settings preflight rejects malformed and read-only files without mutating 
     writeFileSync(path, "{"); assert.throws(() => planSettings({ mainProfile: root })); assert.equal(readFileSync(path, "utf8"), "{");
     const valid = JSON.stringify({ plugins: { Existing: { enabled: true } } }); writeFileSync(path, valid); chmodSync(path, 0o400);
     assert.throws(() => planSettings({ mainProfile: root }), /writable/); assert.equal(readFileSync(path, "utf8"), valid);
+});
+
+test("rollback preflight rejects replaced targets before any release mutation", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, mainProfile: join(root, "main"), mainLauncher: join(root, "launcher"), updater: join(root, "updater"), ledger: join(root, "ledger") };
+    mkdirSync(join(c.mainProfile, "settings"), { recursive: true }); mkdirSync(join(c.mainProfile, "PresenceGuard")); mkdirSync(c.ledger);
+    const settings = join(c.mainProfile, "settings/settings.json"), lease = join(c.mainProfile, "PresenceGuard/lease.json");
+    writeFileSync(c.mainLauncher, "original launcher"); writeFileSync(c.updater, "original updater"); writeFileSync(settings, JSON.stringify({ plugins: {} }));
+    preflightRollback(c); symlinkSync(settings, lease); assert.throws(() => preflightRollback(c), /unsafe_target_file/); unlinkSync(lease);
+    chmodSync(join(c.mainProfile, "settings"), 0o500); assert.throws(() => preflightRollback(c), /unsafe_target_parent/); chmodSync(join(c.mainProfile, "settings"), 0o700);
+    assert.equal(readFileSync(c.mainLauncher, "utf8"), "original launcher"); assert.equal(readFileSync(c.updater, "utf8"), "original updater");
 });

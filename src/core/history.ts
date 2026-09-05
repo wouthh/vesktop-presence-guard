@@ -22,3 +22,9 @@ export function mergeHistory(persisted: HistoryEvent[], current: HistoryEvent[],
     });
     return retain(events, now);
 }
+
+export async function clearHistoryView(view: { get(): HistoryEvent[]; set(events: HistoryEvent[]): void }, clearNative: () => Promise<unknown>): Promise<void> {
+    const covered = new Set(view.get());
+    await clearNative();
+    view.set(view.get().filter(event => !covered.has(event)));
+}

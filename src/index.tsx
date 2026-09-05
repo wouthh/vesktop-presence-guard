@@ -15,7 +15,7 @@ import { BUILD_INFO } from "./buildInfo";
 import { cameraSnapshot, PipeWireDetector } from "./core/camera";
 import { DisplayDetector } from "./core/display";
 import { PresenceEngine } from "./core/engine";
-import { mergeHistory, retain } from "./core/history";
+import { clearHistoryView, mergeHistory, retain } from "./core/history";
 import { statusMutator } from "./core/mutator";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
@@ -51,6 +51,7 @@ let updater: any;
 let connectionStates: any;
 let delay: number;
 let events: HistoryEvent[] = [];
+let historyGeneration = 0;
 let display = UNKNOWN("GNOME");
 let pwCamera = UNKNOWN("PipeWire");
 let localCamera = UNKNOWN("Vesktop");
@@ -151,7 +152,7 @@ function Panel() {
             <Button onClick={() => { settings.store.camera = !settings.store.camera; configure(); }}>Webcam DND: {settings.store.camera ? "On" : "Off"}</Button>
             <Button onClick={() => engine?.resume()}>Resume paused rules</Button>
             <Button onClick={() => void Native.exportHistory().then(ok => setMessage(ok ? "Export saved locally." : "Export cancelled.")).catch(() => setMessage("Export failed; existing files are never overwritten."))}>Export JSON</Button>
-            <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) void Native.clearHistory().then(() => { events = []; notify(); }); }}>Clear history</Button>
+            <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) { historyGeneration++; void clearHistoryView({ get: () => events, set: value => { events = value; notify(); } }, () => Native.clearHistory()).catch(() => setMessage("History could not be cleared; local view preserved.")); } }}>Clear history</Button>
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>
@@ -198,7 +199,8 @@ export default definePlugin({
         for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; engine?.boundary(event.toLowerCase()); provenance.clear(); });
         for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; engine?.boundary("connection_open_new_epoch"); queueMicrotask(() => engine?.sample()); });
         const epoch = lifecycle;
-        void Native.readHistory().then(history => { if (epoch === lifecycle) { events = mergeHistory(history, events, Date.now()); notify(); } }).catch(() => { patchError = "history_unavailable_preserved"; });
+        const historyEpoch = historyGeneration;
+        void Native.readHistory().then(history => { if (epoch === lifecycle && historyEpoch === historyGeneration) { events = mergeHistory(history, events, Date.now()); notify(); } }).catch(() => { patchError = "history_unavailable_preserved"; });
         void Native.consumeWelcome().then(show => { if (show && epoch === lifecycle) openPanel(); });
         engine.sample(); interval = setInterval(() => void poll(), 2000); void poll();
     },

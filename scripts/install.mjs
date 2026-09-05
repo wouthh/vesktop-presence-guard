@@ -75,18 +75,36 @@ function backupHashes(c) {
     }
     return result;
 }
-export function planSettings(c) {
-    const path = join(c.mainProfile, "settings/settings.json"), stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw Error("unsafe_settings_file");
-    if (!(stat.mode & 0o222)) throw Error("settings_not_writable");
-    accessSync(path, constants.R_OK | constants.W_OK); accessSync(dirname(path), constants.W_OK);
+function statOrNull(path) { try { return lstatSync(path); } catch (e) { if (e.code === "ENOENT") return null; throw e; } }
+export function writableTarget(path, allowMissing = false) {
+    const stat = statOrNull(path);
+    if (!stat && !allowMissing) throw Error("required_target_missing");
+    if (stat && (!stat.isFile() || stat.isSymbolicLink())) throw Error("unsafe_target_file");
+    if (stat && !(stat.mode & 0o222)) throw Error("target_not_writable");
+    if (stat) accessSync(path, constants.R_OK | constants.W_OK);
+    const parent = lstatSync(dirname(path));
+    if (!parent.isDirectory() || parent.isSymbolicLink() || !(parent.mode & 0o222)) throw Error("unsafe_target_parent");
+    accessSync(dirname(path), constants.W_OK);
+}
+function readSettings(c) {
+    const path = join(c.mainProfile, "settings/settings.json"); writableTarget(path);
     const value = read(path);
     if (!value || typeof value !== "object" || Array.isArray(value) || !value.plugins || typeof value.plugins !== "object" || Array.isArray(value.plugins)) throw Error("malformed_plugin_settings");
-    return enableMain(value);
+    return value;
+}
+export function planSettings(c) { return enableMain(readSettings(c)); }
+export function preflightRollback(c) {
+    for (const path of [c.mainLauncher, c.updater]) writableTarget(path);
+    for (const path of [join(c.mainProfile, "PresenceGuard/lease.json"), join(c.ledger, "rolled-back.json")]) writableTarget(path, true);
+    const root = lstatSync(c.vencordRoot);
+    if (!root.isDirectory() || root.isSymbolicLink()) throw Error("unsafe_vencord_root");
+    accessSync(c.vencordRoot, constants.W_OK);
+    return readSettings(c);
 }
 export function pinBaseline(c) {
-    const root = join(c.vencordRoot, ".presence-guard"); mkdirSync(root, { recursive: true, mode: 0o700 });
-    const path = join(root, "baseline.json");
+    const root = join(c.vencordRoot, ".presence-guard"), path = join(root, "baseline.json");
+    if (!existsSync(path) && existsSync(join(c.ledger, "installed.json"))) throw Error("installed_baseline_missing");
+    mkdirSync(root, { recursive: true, mode: 0o700 });
     if (!existsSync(path)) {
         const dist = realpathSync(join(c.vencordRoot, "dist"));
         if (!dist.startsWith(`${realpathSync(join(c.vencordRoot, ".wout-releases"))}/`) || !dist.endsWith("/dist")) throw Error("baseline_not_retained_release");
@@ -106,7 +124,7 @@ export function planHelper(c) {
         if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw Error("helper_directory_drift");
         accessSync(existsSync(path) ? path : dirname(path), constants.W_OK);
     }
-    accessSync(c.mainLauncher, constants.R_OK | constants.W_OK); accessSync(dirname(c.mainLauncher), constants.W_OK); accessSync(c.ledger, constants.W_OK);
+    writableTarget(c.mainLauncher); writableTarget(join(c.ledger, "installed-launcher.sha256"), true); accessSync(c.ledger, constants.W_OK);
     const configPath = join(native, "installation.json");
     if (existsSync(configPath) && (lstatSync(configPath).isSymbolicLink() || read(configPath).snapshot !== join(root, "display.json") || read(configPath).version !== 1)) throw Error("helper_configuration_drift");
     const helperPath = join(root, "display-helper.mjs"), receipt = join(c.ledger, "installed.json");
@@ -179,13 +197,15 @@ export async function main(args) {
     // Restore the pinned, hash-verified retained release, independent of later update history.
     if (!locked) return underLock();
     const rolledBack = join(c.ledger, "rolled-back.json");
+    if (!existsSync(join(c.ledger, "installed.json"))) throw Error("no_installation_receipt");
+    const currentSettings = preflightRollback(c);
     const baseline = pinBaseline(c);
     if (existsSync(rolledBack)) {
         if (realpathSync(join(c.vencordRoot, "dist")) !== baseline.dist || hash(readFileSync(c.mainLauncher)) !== hash(readFileSync(join(c.ledger, "backups/main-launcher"))) || hash(readFileSync(c.updater)) !== hash(readFileSync(join(c.ledger, "backups/updater")))) throw Error("rollback_drift");
         return console.log("Previous integration is already restored; history retained.");
     }
     verifyWiring(c);
-    const settings = restoreMain(read(settingsPath), read(join(c.ledger, "backups/main-plugins")));
+    const settings = restoreMain(currentSettings, read(join(c.ledger, "backups/main-plugins")));
     const current = realpathSync(join(c.vencordRoot, "dist"));
     const receipt = read(join(c.ledger, "installed.json"));
     if (current !== receipt.dist || hash(readFileSync(join(current, "vencordDesktopRenderer.js"))) !== receipt.rendererHash || hash(readFileSync(join(current, "vencordDesktopMain.js"))) !== receipt.mainHash) throw Error("active_build_changed_since_installation");

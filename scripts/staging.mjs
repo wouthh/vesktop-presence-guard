@@ -32,6 +32,9 @@ export function verifyStaged(project, destination, commit) {
     return m;
 }
 export function stage(project, vencord, dryRun = false) {
+    const gitRoot = execFileSync("git", ["-C", vencord, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+    if (resolve(gitRoot) !== resolve(vencord)) throw Error("staging_requires_vencord_git_root");
+    const receiptPath = execFileSync("git", ["-C", vencord, "rev-parse", "--path-format=absolute", "--git-path", "presence-guard-stage.json"], { encoding: "utf8" }).trim();
     const destination = join(resolve(vencord), "src/userplugins/presenceGuard");
     const commit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const source = join(project, "src"), files = inventory(source);
@@ -40,10 +43,19 @@ export function stage(project, vencord, dryRun = false) {
         if (lstatSync(destination).isSymbolicLink()) throw Error("unexpected_staging_symlink");
         const marker = join(destination, ".presence-guard-stage.json");
         if (!existsSync(marker)) throw Error("unowned_staging_directory");
-        const old = JSON.parse(readFileSync(marker, "utf8")), actual = inventory(destination);
+        const markerBytes = readFileSync(marker), old = JSON.parse(markerBytes), actual = inventory(destination);
+        if (existsSync(receiptPath)) {
+            if (lstatSync(receiptPath).isSymbolicLink()) throw Error("staging_receipt_symlink");
+            const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+            if (receipt.version !== 1 || receipt.markerHash !== hash(markerBytes) || receipt.commit !== old.commit || receipt.sourceHash !== old.sourceHash) throw Error("staging_receipt_drift");
+        } else {
+            // A legacy tree may be attested only when every byte matches current canonical source.
+            verifyStaged(project, destination, old.commit);
+        }
         delete actual[".presence-guard-stage.json"];
         if (JSON.stringify(actual) !== JSON.stringify(old.files)) throw Error("staged_source_drift");
     }
+    else if (existsSync(receiptPath)) throw Error("staging_tree_missing_receipt_preserved");
     if (dryRun) return { destination, commit, sourceHash, files: Object.keys(files).length };
     if (existsSync(destination)) rmSync(destination, { recursive: true }); // Exact, verified, generated tree only.
     mkdirSync(destination, { recursive: true });
@@ -51,7 +63,9 @@ export function stage(project, vencord, dryRun = false) {
     writeFileSync(join(destination, "buildInfo.ts"), buildInfo(source, commit));
     const staged = inventory(destination);
     const manifest = { version: 1, commit, upstream: UPSTREAM, sourceHash, files: staged };
-    writeFileSync(join(destination, ".presence-guard-stage.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+    const markerBytes = JSON.stringify(manifest, null, 2);
+    writeFileSync(join(destination, ".presence-guard-stage.json"), markerBytes, { mode: 0o600 });
+    writeFileSync(receiptPath, JSON.stringify({ version: 1, markerHash: hash(markerBytes), commit, sourceHash }), { mode: 0o600 });
     if (hash(JSON.stringify(inventory(source))) !== sourceHash) throw Error("canonical_source_changed_during_staging");
     return { destination, commit, sourceHash, files: Object.keys(files).length };
 }

@@ -110,7 +110,9 @@ pnpm check
 Use Node 22.12+ and the pinned pnpm version in `package.json`. The canonical gate
 runs lint, strict types, production-logic tests with fake time, a privacy scan,
 the helper build, and an isolated clone/build of the pinned public Vencord
-revision (network needed initially). Cached/generated files stay ignored.
+revision (network needed initially). An additional runtime variant test runs when
+GJS is installed and is explicitly skipped otherwise. Cached/generated files stay
+ignored.
 `pnpm test` runs focused tests. Local client compatibility can be checked without
 executing its code:
 

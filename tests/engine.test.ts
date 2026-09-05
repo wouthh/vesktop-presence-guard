@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PresenceEngine } from "../src/core/engine";
-import { mergeHistory, retain, RETENTION_MS } from "../src/core/history";
+import { clearHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
 import type { HistoryEvent, Options, Snapshot, Status, WriteToken } from "../src/core/types";
 
@@ -139,4 +139,19 @@ test("external intervention pauses both owner and in-flight transition rules", a
     f.signal("inactive", "active"); await f.advance(); f.engine.external("external");
     f.s.configured = f.s.effective = "online"; release(); await f.flush(); await f.advance();
     assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]); assert.deepEqual(f.writes, ["idle"]);
+});
+
+test("disabling an awaiting camera transition preserves an enabled Idle owner", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    let release!: () => void; f.delayWrite(() => new Promise(r => { release = r; }));
+    f.signal("inactive", "active"); await f.advance(); f.engine.configure({ observe: true, idle: true, camera: false });
+    assert.equal(f.engine.ownership?.status, "idle"); release(); await f.flush();
+    f.delayWrite(async () => {}); f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("history clear keeps events recorded after the serialized clear request", async () => {
+    const f = fixture(); f.engine.sample(); const original = f.history[0];
+    let view = [original]; let release!: () => void;
+    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }));
+    const later = { ...original, at: original.at + 1 }; view = [...view, later]; release(); await clearing;
+    assert.deepEqual(view, [later]);
 });
