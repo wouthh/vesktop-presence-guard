@@ -9,6 +9,8 @@ if (!/^\d+$/.test(parentText ?? "") || !/^\d+$/.test(parentStart ?? "") || !snap
 const loop = new GLib.MainLoop(null, false);
 const decoder = new TextDecoder();
 function read(path: string) {
+    const info = Gio.File.new_for_path(path).query_info("standard::type,standard::size", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
+    if (info.get_file_type() !== Gio.FileType.REGULAR || info.get_size() > 65536) throw Error("unsafe_helper_input");
     const [ok, bytes] = GLib.file_get_contents(path);
     if (!ok || bytes.length > 65536) throw Error("bounded_read_failed");
     return decoder.decode(bytes);

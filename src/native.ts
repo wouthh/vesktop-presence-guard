@@ -7,12 +7,11 @@
 import { DATA_DIR } from "@main/utils/constants";
 import { execFile } from "child_process";
 import { app, dialog, IpcMainInvokeEvent } from "electron";
-import { constants } from "fs";
-import { lstat, mkdir, open, writeFile } from "fs/promises";
+import { lstat, mkdir, writeFile } from "fs/promises";
 import { isAbsolute, join } from "path";
 
 import { retain } from "./core/history";
-import { atomicLocalFile } from "./core/localFile";
+import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
 import { HistoryEvent, status } from "./core/types";
 
 const directory = join(DATA_DIR, "PresenceGuard");
@@ -22,16 +21,6 @@ async function ready() {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const s = await lstat(directory);
     if (!s.isDirectory() || s.isSymbolicLink()) throw Error("unsafe_history_directory");
-}
-async function bounded(path: string, max = 1024 * 1024) {
-    const fd = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-        if ((await fd.stat()).size > max) throw Error("file_too_large");
-        const b = Buffer.alloc(max + 1);
-        const { bytesRead } = await fd.read(b, 0, b.length, 0);
-        if (bytesRead > max) throw Error("file_too_large");
-        return JSON.parse(b.subarray(0, bytesRead).toString("utf8"));
-    } finally { await fd.close(); }
 }
 async function atomic(name: string, data: unknown) {
     await ready();
@@ -105,7 +94,7 @@ export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {
     const v = value as Record<string, unknown>;
     // Fixed keys only. Account IDs and arbitrary renderer objects are never persisted here.
     const result: Record<string, unknown> = { at: Date.now() };
-    for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "cameraReason", "patchError"]) {
+    for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "cameraReason", "patchError", "storageHealth"]) {
         if (typeof v[key] === "string") result[key] = (v[key] as string).slice(0,240);
     }
     for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive"]) {

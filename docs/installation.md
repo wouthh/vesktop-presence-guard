@@ -17,6 +17,10 @@ Mullvad-excluded Flatpak invocation; unexpected launchers are rejected intact.
 Before the first installation, the private ledger's `backups` directory must
 contain `main-launcher`, `updater`, and `main-plugins` (the original main Vencord
 settings JSON). Also back up both profiles' state/settings and the Alt launcher.
+Before modifying executables, record their original numeric Unix modes in
+`backups/executable-modes.json`, with keys `main-launcher` and `updater` (for
+example, 448 represents mode 0700). The baseline authenticates this file and
+restores those modes; private backup copies may themselves stay mode 0600.
 The existing private updater needs a reviewed extension to include the exact
 PresenceGuard staging manifest, verify its hashes against canonical source,
 recheck candidate bundle hashes at activation, preserve its source alongside
@@ -52,7 +56,9 @@ targets stop the operation before integration changes.
 An installation receipt also requires its recorded helper and configuration to
 remain present; updates do not silently recreate missing installed artifacts.
 Orphaned helper configuration and unsafe helper log, lease, history, diagnostics
-and snapshot targets are also rejected. A first install forces observation on
+and snapshot targets are also rejected. Without an installation receipt those
+runtime files must be absent, even if they are regular and writable. Installed
+launcher and updater receipts are mandatory for updates. A first install forces observation on
 and both rules off, even if a stale settings entry exists; verified updates keep
 the existing rule preferences.
 
@@ -99,7 +105,8 @@ the pinned original release, then atomically switches the retained build back.
 The manifest is authenticated against a separate `baseline.sha256` in the private
 ledger before any paths or bundle hashes in it are trusted. The private updater
 must verify that anchor before using the manifest to protect a release from pruning.
-It restores the original main launcher and private updater, restores only the
+It restores the original main launcher and private updater with their recorded
+permissions, restores only the
 PresenceGuard settings entry, and disables the helper lease. Unrelated settings,
 Alt configuration and local history remain. Relaunch normally. Repeating a
 successful rollback is a verified no-op. Later unrelated updater activation is

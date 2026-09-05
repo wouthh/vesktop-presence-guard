@@ -32,6 +32,10 @@ account IDs. Clear it in the panel or explicitly export JSON to a chosen local
 file. Nothing is uploaded. Local observations do not independently prove what
 another session or user sees. Confirmation means Discord applied the local
 update; it does not prove a successful server save.
+The panel reports local storage failures separately from status-hook health.
+Failures remain visible until the corresponding operation succeeds. Diagnostic
+write failures do not invalidate otherwise healthy detector observations. Native
+JSON reads reject non-regular files without waiting on a FIFO.
 
 ## Status safety
 

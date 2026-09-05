@@ -17,6 +17,7 @@ import { DisplayDetector } from "./core/display";
 import { PresenceEngine } from "./core/engine";
 import { clearHistoryView, loadHistoryView, retain } from "./core/history";
 import { statusMutator } from "./core/mutator";
+import { PersistenceHealth } from "./core/persistenceHealth";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
 import { CameraTracks } from "./core/tracks";
@@ -31,6 +32,7 @@ const Gateway = findStoreLazy("GatewayConnectionStore");
 const Idle = findStoreLazy("IdleStore");
 const Voice = findStoreLazy("RTCConnectionStore");
 const provenance = new Provenance();
+const persistenceHealth = new PersistenceHealth();
 const displayDetector = new DisplayDetector();
 const pipewireDetector = new PipeWireDetector();
 const tracks = new CameraTracks(() => { void poll(); });
@@ -60,7 +62,7 @@ const notify = () => changes.forEach(fn => fn());
 const historyView = { get: () => events, set: (value: HistoryEvent[]) => { events = value; notify(); } };
 function loadHistory() {
     const epoch = lifecycle, generation = historyGeneration;
-    return loadHistoryView(historyView, () => Native.readHistory(), () => epoch === lifecycle && generation === historyGeneration, Date.now);
+    return loadHistoryView(historyView, () => persistenceHealth.run("history_read", () => Native.readHistory()), () => epoch === lifecycle && generation === historyGeneration, Date.now);
 }
 const settings = definePluginSettings({
     observe: { type: OptionType.BOOLEAN, description: "Keep bounded local own-status history", default: true, onChange: () => configure() },
@@ -76,7 +78,7 @@ function read(): Snapshot {
 }
 function record(event: HistoryEvent) {
     events = retain([...events, event], Date.now());
-    void Native.appendHistory(event).catch(() => { patchError = "local_history_write_failed"; notify(); });
+    void persistenceHealth.run("history_write", () => Native.appendHistory(event)).then(notify, notify);
     notify();
 }
 function configure() { engine?.configure(options()); notify(); }
@@ -125,7 +127,7 @@ async function poll() {
         localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: tracks.live ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_muted_or_disabled" : "no_observed_live_camera_track" };
         engine.sample();
         const s = read();
-        await Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine.latestDecision, mode: mode(), displayReason: display.reason, cameraReason: s.camera.reason, statusHooks, cameraHook, panelMounted, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError });
+        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, cameraReason: s.camera.reason, statusHooks, cameraHook, panelMounted, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, storageHealth: persistenceHealth.summary }));
         notify();
     } catch { if (epoch === lifecycle) { display = UNKNOWN("GNOME", "native_poll_failed"); pwCamera = UNKNOWN("PipeWire", "native_poll_failed"); engine?.sample(); } }
     finally { polling = false; }
@@ -148,6 +150,7 @@ function Panel() {
         <Forms.FormTitle>PresenceGuard — {mode()}</Forms.FormTitle>
         <Forms.FormText>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Forms.FormText>
         <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Safety hooks: {patchError}.</Forms.FormText>
+        <Forms.FormText>Local storage: {persistenceHealth.summary}.</Forms.FormText>
         <Forms.FormText>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Forms.FormText>
         <Forms.FormText>Camera: {s.camera.value} — {s.camera.reason}. {s.camera.scope}. Last sample: {s.camera.at ? new Date(s.camera.at).toLocaleTimeString() : "none"}.</Forms.FormText>
         <Forms.FormText>PipeWire: {pwCamera.value} — {pwCamera.reason}. Vesktop: {localCamera.value} — {localCamera.reason}.</Forms.FormText>
@@ -157,7 +160,7 @@ function Panel() {
             <Button onClick={() => { settings.store.camera = !settings.store.camera; configure(); }}>Webcam DND: {settings.store.camera ? "On" : "Off"}</Button>
             <Button onClick={() => engine?.resume()}>Resume paused rules</Button>
             <Button onClick={() => void Native.exportHistory().then(ok => setMessage(ok ? "Export saved locally." : "Export cancelled.")).catch(() => setMessage("Export failed; existing files are never overwritten."))}>Export JSON</Button>
-            <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) { historyGeneration++; void clearHistoryView(historyView, () => Native.clearHistory(), loadHistory).catch(() => setMessage("History could not be cleared. Reloaded saved events where readable; current events retained.")); } }}>Clear history</Button>
+            <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) { historyGeneration++; void clearHistoryView(historyView, () => persistenceHealth.run("history_clear", () => Native.clearHistory()), loadHistory).catch(() => setMessage("History could not be cleared. Reloaded saved events where readable; current events retained.")); } }}>Clear history</Button>
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>
@@ -204,7 +207,7 @@ export default definePlugin({
         for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; engine?.boundary(event.toLowerCase()); provenance.clear(); });
         for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; engine?.boundary("connection_open_new_epoch"); queueMicrotask(() => engine?.sample()); });
         const epoch = lifecycle;
-        void loadHistory().catch(() => { patchError = "history_unavailable_preserved"; });
+        void loadHistory().then(notify, notify);
         void Native.consumeWelcome().then(show => { if (show && epoch === lifecycle) openPanel(); });
         engine.sample(); interval = setInterval(() => void poll(), 2000); void poll();
     },
@@ -217,6 +220,6 @@ export default definePlugin({
         tracks.clear();
         display = UNKNOWN("GNOME"); pwCamera = UNKNOWN("PipeWire"); localCamera = UNKNOWN("Vesktop");
         void Native.lease(false);
-        void Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped" });
+        void persistenceHealth.diagnostics(() => Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped", storageHealth: persistenceHealth.summary }));
     }
 });

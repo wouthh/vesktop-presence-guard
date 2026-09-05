@@ -21,7 +21,7 @@ test("production helper enters its loop before quitting for an already-exited pa
 
 test("production helper re-reads sleep state after a resume signal missed without a lease", async () => {
     const source = buildSync({ entryPoints: ["helper/display-helper.ts"], bundle: true, write: false, format: "cjs", platform: "neutral", external: ["gi://Gio", "gi://GLib", "gi://GLibUnix"] }).outputFiles[0].text;
-    let enabled = true, sleeping = true, snapshot: any, tick!: () => void;
+    let enabled = true, sleeping = true, regularLease = true, snapshot: any, tick!: () => void;
     const idle: (() => void)[] = [], subscriptions = new Set<number>(); let next = 1;
     class Variant { constructor(_type: string, public value: any) {} deepUnpack() { return this.value; } }
     const bus = {
@@ -39,13 +39,15 @@ test("production helper re-reads sleep state after a resume signal missed withou
         Variant, uuid_string_random: () => "synthetic-instance", PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false, SOURCE_CONTINUE: true,
         MainLoop: class { run() { for (const fn of idle.splice(0)) fn(); } quit() {} },
         idle_add: (_: unknown, fn: () => void) => idle.push(fn), timeout_add_seconds: (_: unknown, _seconds: number, fn: () => void) => { tick = fn; return 1; }, source_remove: () => {},
-        file_get_contents: (path: string) => [true, new TextEncoder().encode(path.startsWith("/proc/") ? `123 (synthetic) ${Array.from({ length: 20 }, (_, i) => i === 19 ? "456" : "0").join(" ")}` : JSON.stringify({ enabled, at: Date.now() }))]
+        file_get_contents: (path: string) => { assert(path.startsWith("/proc/") || regularLease, "must not open a non-regular lease"); return [true, new TextEncoder().encode(path.startsWith("/proc/") ? `123 (synthetic) ${Array.from({ length: 20 }, (_, i) => i === 19 ? "456" : "0").join(" ")}` : JSON.stringify({ enabled, at: Date.now() }))]; }
     };
-    const gio = { DBus: { session: bus, system: bus }, DBusCallFlags: { NO_AUTO_START: 1 }, DBusSignalFlags: { NONE: 0 }, Settings: class { get_uint() { return 300; } }, File: { new_for_path: () => ({ replace_contents: (bytes: Uint8Array) => { snapshot = JSON.parse(new TextDecoder().decode(bytes)); } }) }, FileCreateFlags: { PRIVATE: 1, REPLACE_DESTINATION: 2 } };
+    const gio = { DBus: { session: bus, system: bus }, DBusCallFlags: { NO_AUTO_START: 1 }, DBusSignalFlags: { NONE: 0 }, Settings: class { get_uint() { return 300; } }, FileType: { REGULAR: 1 }, FileQueryInfoFlags: { NOFOLLOW_SYMLINKS: 1 }, File: { new_for_path: (path: string) => ({ query_info: () => ({ get_file_type: () => path.startsWith("/proc/") || regularLease ? 1 : 4, get_size: () => 0 }), replace_contents: (bytes: Uint8Array) => { snapshot = JSON.parse(new TextDecoder().decode(bytes)); } }) }, FileCreateFlags: { PRIVATE: 1, REPLACE_DESTINATION: 2 } };
     runInNewContext(source, { ARGV: ["123", "456", "/synthetic/snapshot", "/synthetic/lease"], TextDecoder, TextEncoder, require: (name: string) => ({ "gi://Gio": gio, "gi://GLib": glib, "gi://GLibUnix": { signal_add: () => 1 } })[name] });
     const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
     await flush(); assert.equal(snapshot.observation.suspended, true);
     enabled = false; tick(); await flush(); assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive");
     sleeping = false; enabled = true; tick(); await flush();
     assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 4);
+    regularLease = false; tick(); await flush();
+    assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive");
 });

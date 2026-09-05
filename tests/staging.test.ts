@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
 import { stage, verifyStaged, hash } from "../scripts/staging.mjs";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
-import { restoreMain, pinBaseline, verifyWiring, planHelper, planSettings } from "../scripts/install.mjs";
+import { restoreMain, pinBaseline, verifyWiring, planHelper, planSettings, restoreExecutables } from "../scripts/install.mjs";
 import { leaseActive, startIdentity } from "../helper/lifetime";
 
 test("actual staging dry run, repeat install and drift rejection preserve other plugins", t => {
@@ -45,10 +45,18 @@ test("baseline pinning and wiring validation reject changed files", t => {
     const c = { vencordRoot: root, ledger, mainLauncher: join(root, "launcher"), updater: join(root, "updater") };
     for (const [path, backup] of [[c.mainLauncher, "main-launcher"], [c.updater, "updater"]]) { writeFileSync(path, "fixture"); writeFileSync(join(ledger, "backups", backup), "fixture"); }
     writeFileSync(join(ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
+    writeFileSync(join(ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o700, updater: 0o750 }));
     assert.deepEqual(pinBaseline(c), pinBaseline(c));
     assert.throws(() => verifyWiring(c), /required_updater_receipt_missing/);
     writeFileSync(join(ledger, "installed-updater.sha256"), hash("fixture"));
-    verifyWiring(c); writeFileSync(c.mainLauncher, "changed"); assert.throws(() => verifyWiring(c), /drift/);
+    verifyWiring(c);
+    writeFileSync(join(ledger, "installed.json"), "{}");
+    assert.throws(() => verifyWiring(c), /required_launcher_receipt_missing/);
+    writeFileSync(join(ledger, "installed-launcher.sha256"), hash("fixture")); verifyWiring(c);
+    const umask = process.umask(0o077);
+    try { restoreExecutables(c, pinBaseline(c)); } finally { process.umask(umask); }
+    assert.equal(statSync(c.mainLauncher).mode & 0o777, 0o700); assert.equal(statSync(c.updater).mode & 0o777, 0o750);
+    writeFileSync(c.mainLauncher, "changed"); assert.throws(() => verifyWiring(c), /drift/);
     writeFileSync(join(ledger, "backups/updater"), "changed backup"); assert.throws(() => pinBaseline(c), /backup_drift/);
     writeFileSync(join(ledger, "backups/updater"), "fixture");
     const baselinePath = join(root, ".presence-guard/baseline.json"), originalBaseline = readFileSync(baselinePath, "utf8"), tampered = JSON.parse(originalBaseline);
@@ -67,6 +75,7 @@ test("verified rollback artifacts support reinstall using the original ledger", 
     writeFileSync(c.mainLauncher, launcher); writeFileSync(join(c.ledger, "backups/main-launcher"), launcher);
     writeFileSync(c.updater, "reviewed extension"); writeFileSync(join(c.ledger, "backups/updater"), "original updater");
     writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
+    writeFileSync(join(c.ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o755, updater: 0o700 }));
     const baseline = pinBaseline(c);
     writeFileSync(join(root, ".presence-guard/display-helper.mjs"), "verified helper");
     writeFileSync(join(native, "installation.json"), JSON.stringify({ version: 1, snapshot: join(root, ".presence-guard/display.json"), welcome: false }));

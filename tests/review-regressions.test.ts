@@ -112,6 +112,12 @@ test("orphaned configuration and unsafe helper logs or directories stop first in
     mkdirSync(log); assert.throws(() => planHelper(c), /unsafe_target_file/); rmSync(log, { recursive: true });
     symlinkSync(c.mainLauncher, log); assert.throws(() => planHelper(c), /unsafe_target_file/); unlinkSync(log);
     writeFileSync(log, "", { mode: 0o400 }); assert.throws(() => planHelper(c), /target_not_writable/); unlinkSync(log);
+    mkdirSync(join(root, ".presence-guard"));
+    for (const path of ["helper.log", "lease.json", "history.json", "diagnostics.json"].map(name => join(native, name)).concat(join(root, ".presence-guard/display.json"))) {
+        writeFileSync(path, "synthetic unrelated contents");
+        assert.throws(() => planHelper(c), /unowned_runtime_artifact/);
+        assert.equal(readFileSync(path, "utf8"), "synthetic unrelated contents"); unlinkSync(path);
+    }
     const lease = join(native, "lease.json");
     mkdirSync(lease); assert.throws(() => planHelper(c), /unsafe_target_file/); rmSync(lease, { recursive: true });
     symlinkSync(c.mainLauncher, lease); assert.throws(() => planHelper(c), /unsafe_target_file/); unlinkSync(lease);
