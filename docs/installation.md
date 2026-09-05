@@ -50,7 +50,10 @@ candidate activation. Unexpected directories, symlinks and read-only receipt
 targets stop the operation before integration changes.
 An installation receipt also requires its recorded helper and configuration to
 remain present; updates do not silently recreate missing installed artifacts.
-Orphaned helper configuration and unsafe helper-log targets are also rejected.
+Orphaned helper configuration and unsafe helper log, lease, history, diagnostics
+and snapshot targets are also rejected. A first install forces observation on
+and both rules off, even if a stale settings entry exists; verified updates keep
+the existing rule preferences.
 
 Immediately before restart, verify **neither profile has a call or capture**.
 If reliable client inspection is unavailable, obtain an explicit no-call/capture
@@ -89,6 +92,9 @@ node scripts/install.mjs rollback --config "$PG_CONFIG"
 
 Rollback checks launcher/updater receipts, current installed bundle hashes and
 the pinned original release, then atomically switches the retained build back.
+The manifest is authenticated against a separate `baseline.sha256` in the private
+ledger before any paths or bundle hashes in it are trusted. The private updater
+must verify that anchor before using the manifest to protect a release from pruning.
 It restores the original main launcher and private updater, restores only the
 PresenceGuard settings entry, and disables the helper lease. Unrelated settings,
 Alt configuration and local history remain. Relaunch normally. Repeating a
@@ -96,6 +102,10 @@ successful rollback is a verified no-op. Later unrelated updater activation is
 considered drift and requires reviewing the recorded release before rollback.
 
 Generated source/helper files and history are retained for inspection, not
-collected after uninstall. Reinstallation after rollback requires repeating the
-reviewed private updater setup and starting a new installation ledger. Do not
+collected after uninstall. Reinstallation after rollback uses the **original
+ledger and descriptor**: reapply the reviewed private updater extension and its
+installed-updater receipt, run `prepare`, then `install` after the same safe Quit
+procedure. The recorded rollback, original build and retained helper/configuration
+are verified before reusing them. First-install defaults and the welcome panel are
+restored, and the rollback marker is cleared only after installation succeeds. Do not
 restore whole profile backups over newer authentication or unrelated settings.

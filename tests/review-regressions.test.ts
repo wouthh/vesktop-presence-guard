@@ -112,6 +112,9 @@ test("orphaned configuration and unsafe helper logs or directories stop first in
     mkdirSync(log); assert.throws(() => planHelper(c), /unsafe_target_file/); rmSync(log, { recursive: true });
     symlinkSync(c.mainLauncher, log); assert.throws(() => planHelper(c), /unsafe_target_file/); unlinkSync(log);
     writeFileSync(log, "", { mode: 0o400 }); assert.throws(() => planHelper(c), /target_not_writable/); unlinkSync(log);
+    const lease = join(native, "lease.json");
+    mkdirSync(lease); assert.throws(() => planHelper(c), /unsafe_target_file/); rmSync(lease, { recursive: true });
+    symlinkSync(c.mainLauncher, lease); assert.throws(() => planHelper(c), /unsafe_target_file/); unlinkSync(lease);
     rmSync(native, { recursive: true }); symlinkSync(join(root, "missing"), native);
     assert.throws(() => planHelper(c), /helper_directory_drift/);
 });

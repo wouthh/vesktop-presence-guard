@@ -8,7 +8,7 @@ import { test } from "node:test";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
 import { stage, verifyStaged, hash } from "../scripts/staging.mjs";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
-import { restoreMain, pinBaseline, verifyWiring } from "../scripts/install.mjs";
+import { restoreMain, pinBaseline, verifyWiring, planHelper, planSettings } from "../scripts/install.mjs";
 import { leaseActive, startIdentity } from "../helper/lifetime";
 
 test("actual staging dry run, repeat install and drift rejection preserve other plugins", t => {
@@ -48,7 +48,33 @@ test("baseline pinning and wiring validation reject changed files", t => {
     assert.deepEqual(pinBaseline(c), pinBaseline(c)); verifyWiring(c); writeFileSync(c.mainLauncher, "changed"); assert.throws(() => verifyWiring(c), /drift/);
     writeFileSync(join(ledger, "backups/updater"), "changed backup"); assert.throws(() => pinBaseline(c), /backup_drift/);
     writeFileSync(join(ledger, "backups/updater"), "fixture");
+    const baselinePath = join(root, ".presence-guard/baseline.json"), originalBaseline = readFileSync(baselinePath, "utf8"), tampered = JSON.parse(originalBaseline);
+    tampered.files["bundle.js"] = hash("changed"); writeFileSync(join(dist, "bundle.js"), "changed"); writeFileSync(baselinePath, JSON.stringify(tampered));
+    assert.throws(() => pinBaseline(c), /baseline_anchor_drift/); writeFileSync(baselinePath, originalBaseline);
     writeFileSync(join(dist, "bundle.js"), "changed"); assert.throws(() => pinBaseline(c), /drift/);
+});
+
+test("verified rollback artifacts support reinstall using the original ledger", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, mainProfile: join(root, "main"), ledger: join(root, "ledger"), mainLauncher: join(root, "launcher"), updater: join(root, "updater") };
+    const dist = join(root, ".wout-releases/original/dist"), native = join(c.mainProfile, "PresenceGuard");
+    mkdirSync(dist, { recursive: true }); mkdirSync(native, { recursive: true }); mkdirSync(join(c.mainProfile, "settings")); mkdirSync(join(c.ledger, "backups"), { recursive: true });
+    writeFileSync(join(dist, "bundle.js"), "synthetic original"); symlinkSync(dist, join(root, "dist"));
+    const launcher = "#!/bin/sh\nexec mullvad-exclude flatpak run dev.vencord.Vesktop\n";
+    writeFileSync(c.mainLauncher, launcher); writeFileSync(join(c.ledger, "backups/main-launcher"), launcher);
+    writeFileSync(c.updater, "reviewed extension"); writeFileSync(join(c.ledger, "backups/updater"), "original updater");
+    writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
+    const baseline = pinBaseline(c);
+    writeFileSync(join(root, ".presence-guard/display-helper.mjs"), "verified helper");
+    writeFileSync(join(native, "installation.json"), JSON.stringify({ version: 1, snapshot: join(root, ".presence-guard/display.json"), welcome: false }));
+    writeFileSync(join(c.ledger, "installed.json"), JSON.stringify({ helperHash: hash("verified helper") }));
+    writeFileSync(join(c.ledger, "installed-launcher.sha256"), hash("previous installed launcher"));
+    writeFileSync(join(c.ledger, "installed-updater.sha256"), hash("reviewed extension"));
+    writeFileSync(join(c.ledger, "rolled-back.json"), JSON.stringify({ dist: baseline.dist, at: new Date(0).toISOString() }));
+    writeFileSync(join(c.mainProfile, "settings/settings.json"), JSON.stringify({ plugins: { PresenceGuard: { idle: true, camera: true }, Existing: { enabled: true } } }));
+    verifyWiring(c); assert(planHelper(c).launcher.includes("# PresenceGuard process-bound observer"));
+    const settings = planSettings(c); assert.equal(settings.plugins.PresenceGuard.idle, false); assert.equal(settings.plugins.PresenceGuard.camera, false); assert.equal(settings.plugins.Existing.enabled, true);
+    assert.equal(readFileSync(join(root, ".presence-guard/display-helper.mjs"), "utf8"), "verified helper");
 });
 test("helper lease expires, rejects future/malformed data, and identity handles spaced process names", () => {
     assert(leaseActive({ enabled: true, at: 100 }, 101)); assert.equal(leaseActive({ enabled: true, at: 102 }, 101), false);

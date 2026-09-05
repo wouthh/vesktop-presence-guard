@@ -11,7 +11,13 @@ test("first installation enables observation, preserves unrelated settings and r
     assert.deepEqual(installed.plugins.ExistingPlugin, before.plugins.ExistingPlugin); assert.deepEqual(enableMain(installed), installed); assert.equal((before.plugins as any).PresenceGuard, undefined);
 });
 test("updates preserve opt-in preferences", () => {
-    const s = { plugins: { PresenceGuard: { enabled: true, observe: false, idle: true, camera: false } } }; assert.deepEqual(enableMain(s), s);
+    const s = { plugins: { PresenceGuard: { enabled: true, observe: false, idle: true, camera: false } } }; assert.deepEqual(enableMain(s, true), s);
+});
+test("first installation forces observation-only defaults over a stale plugin entry", () => {
+    const before = { plugins: { PresenceGuard: { observe: false, idle: true, camera: true }, Existing: { enabled: true } } };
+    const after = enableMain(before);
+    assert.deepEqual(after.plugins.PresenceGuard, { enabled: true, observe: true, idle: false, camera: false });
+    assert.deepEqual(after.plugins.Existing, before.plugins.Existing); assert.equal(before.plugins.PresenceGuard.camera, true);
 });
 test("production mutator preserves duration and unrelated profile fields", () => {
     const s = { status: { value: "online", extra: "wrapper" }, statusExpiresAtMs: "900", statusCreatedAtMs: { value: "100" }, customStatus: { text: "synthetic" }, showCurrentGame: false };
