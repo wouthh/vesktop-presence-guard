@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
-import { stage, verifyStaged, hash } from "../scripts/staging.mjs";
+import { stage, verifyStaged, hash, inventory } from "../scripts/staging.mjs";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
 import { restoreMain, pinBaseline, verifyWiring, planHelper, planSettings, restoreExecutables } from "../scripts/install.mjs";
 import { leaseActive, startIdentity } from "../helper/lifetime";
@@ -133,4 +133,48 @@ test("staging CLI creates an absent updater runtime directory and remains repeat
     const marker = join(root, "src/userplugins/presenceGuard/.presence-guard-stage.json"), before = readFileSync(marker, "utf8");
     assert.throws(() => execFileSync(process.execPath, ["scripts/install.mjs", "stage", "--config", config, "--locked"], { stdio: "pipe" }), /updater_lock_not_held/);
     assert.equal(readFileSync(marker, "utf8"), before);
+});
+
+for (const kind of ["fifo", "symlink"]) test(`staging rejects ${kind} markers and receipts without blocking`, t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-stage-metadata-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const project = join(root, "project"), vc = join(root, "vencord");
+    mkdirSync(join(project, "src"), { recursive: true }); mkdirSync(vc);
+    writeFileSync(join(project, "src/buildInfo.ts"), "export const BUILD_INFO = {};\n");
+    for (const path of [project, vc]) execFileSync("git", ["init", "-q", path]);
+    execFileSync("git", ["-C", project, "add", "."]); execFileSync("git", ["-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+    const staged = stage(project, vc), module = pathToFileURL(resolve("scripts/staging.mjs")).href;
+    const script = `import { stage, verifyStaged } from ${JSON.stringify(module)}; try { const [action,project,vc,destination,commit]=process.argv.slice(1); if(action==='verify') verifyStaged(project,destination,commit); else stage(project,vc); process.exitCode=1; } catch(e) { if(!/unsafe_regular_file|ELOOP|receipt_symlink/.test(e.message)) throw e; }`;
+    for (const path of [join(staged.destination, ".presence-guard-stage.json"), join(vc, ".git/presence-guard-stage.json")]) {
+        const bytes = readFileSync(path); unlinkSync(path);
+        if (kind === "fifo") execFileSync("mkfifo", [path]);
+        else { const copy = join(root, "metadata-copy"); writeFileSync(copy, bytes); symlinkSync(copy, path); }
+        const actions = path.includes("/.git/") ? ["stage"] : ["stage", "verify"];
+        for (const action of actions) execFileSync(process.execPath, ["--input-type=module", "-e", script, action, project, vc, staged.destination, staged.commit], { timeout: 3000, stdio: "pipe" });
+        unlinkSync(path); writeFileSync(path, bytes, { mode: 0o600 }); assert.deepEqual(stage(project, vc), staged);
+    }
+});
+for (const kind of ["changed", "mode", "symlink", "missing-receipt"]) test(`prepare rejects ${kind} updater before staging or execution`, t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-prepare-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, mainProfile: join(root, "main"), altProfile: join(root, "alt"), ledger: join(root, "ledger"), mainLauncher: join(root, "launcher"), updater: join(root, "updater"), updaterLock: join(root, "runtime/lock") };
+    mkdirSync(c.mainProfile); mkdirSync(c.altProfile); mkdirSync(join(c.ledger, "backups"), { recursive: true });
+    execFileSync("git", ["init", "-q", root]);
+    writeFileSync(join(c.mainProfile, "state.json"), JSON.stringify({ vencordDir: join(root, "dist") }));
+    // An executed fixture must fail visibly; no host updater is used.
+    for (const [path, backup] of [[c.mainLauncher, "main-launcher"], [c.updater, "updater"]]) { writeFileSync(path, "#!/bin/sh\necho UNEXPECTED_EXECUTION >&2\nexit 42\n", { mode: 0o700 }); writeFileSync(join(c.ledger, "backups", backup), readFileSync(path)); }
+    writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
+    writeFileSync(join(c.ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o700, updater: 0o700 }));
+    const receipt = join(c.ledger, "installed-updater.sha256"); writeFileSync(receipt, hash(readFileSync(c.updater)));
+    const config = join(root, "private.json"); writeFileSync(config, JSON.stringify(c), { mode: 0o600 });
+    if (kind === "changed") writeFileSync(c.updater, readFileSync(c.updater, "utf8") + "# drift\n");
+    if (kind === "mode") chmodSync(c.updater, 0o777);
+    if (kind === "symlink") { const copy = join(root, "updater-copy"); writeFileSync(copy, readFileSync(c.updater), { mode: 0o700 }); unlinkSync(c.updater); symlinkSync(copy, c.updater); }
+    if (kind === "missing-receipt") unlinkSync(receipt);
+    for (const flags of [[], ["--dry-run"]]) assert.throws(() => execFileSync(process.execPath, ["scripts/install.mjs", "prepare", "--config", config, ...flags], { timeout: 5000, stdio: "pipe" }), /updater_drift|updater_mode_drift|ELOOP|required_updater_receipt_missing/);
+    assert.throws(() => statSync(join(root, "src/userplugins/presenceGuard")), /ENOENT/);
+});
+
+test("release inventory accepts bounded source maps larger than metadata", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-inventory-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const bytes = Buffer.alloc(5 * 1024 * 1024, 32); writeFileSync(join(root, "renderer.js.map"), bytes);
+    assert.deepEqual(inventory(root), { "renderer.js.map": hash(bytes) });
 });

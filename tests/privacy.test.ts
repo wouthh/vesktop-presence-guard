@@ -39,3 +39,13 @@ for (const privateCopy of ["index", "working"]) test(`privacy gate checks the ${
     writeFileSync(path, privateCopy === "index" ? "harmless" : secret);
     assert.throws(() => execFileSync(process.execPath, [scanner], { cwd: root, stdio: "pipe" }), /privacy pattern/);
 });
+
+test("privacy gate rejects mixed-case private artifact names with harmless contents", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-privacy-"));
+    t.after(() => rmSync(root, { recursive: true, force: true })); execFileSync("git", ["init", "-q", root]);
+    for (const name of ["History.json", "Diagnostics.JSON", "Installation.Json", "Discord-Web.JS", "client.ASAR"]) {
+        writeFileSync(join(root, name), "{}"); execFileSync("git", ["-C", root, "add", name]);
+        assert.throws(() => execFileSync(process.execPath, [scanner], { cwd: root, stdio: "pipe" }), /private artifact tracked/);
+        execFileSync("git", ["-C", root, "rm", "-q", "--cached", name]); unlinkSync(join(root, name));
+    }
+});

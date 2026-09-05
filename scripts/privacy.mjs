@@ -6,8 +6,8 @@ const entries = git(["ls-files", "--stage", "-z"]).split("\0").filter(Boolean);
 const others = git(["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean);
 const forbidden = [/\/home\/[a-z][\w.-]*\//i, /(?:mfa\.[\w-]{30,}|gh[pousr]_[\w]{25,})/, /-----BEGIN (?:RSA |OPENSSH )?PRIVATE KEY-----/, /\b\d{17,20}\b/];
 function scan(file, text) {
-    if (/^(?:\.cache|dist|node_modules)\//.test(file)) throw Error(`generated or dependency artifact cannot be published: ${file}`);
-    if (/history\.json|installation\.json|diagnostics\.json|discord-web\.js|\.asar$/.test(file)) throw Error(`private artifact tracked: ${file}`);
+    if (/^(?:\.cache|dist|node_modules)\//i.test(file)) throw Error(`generated or dependency artifact cannot be published: ${file}`);
+    if (/history\.json|installation\.json|diagnostics\.json|discord-web\.js|\.asar$/i.test(file)) throw Error(`private artifact tracked: ${file}`);
     if (forbidden.some(re => re.test(text))) throw Error(`privacy pattern in ${file}; inspect locally before publishing`);
 }
 function working(file, tracked = false) {

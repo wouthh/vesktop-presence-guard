@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { regularBytes } from "./regular-file.mjs";
 export const UPSTREAM = "0e40e433d7aa9168f656aba733d01e761b7ca8ca";
 export const hash = value => createHash("sha256").update(value).digest("hex");
 export function inventory(root) {
@@ -13,19 +14,19 @@ export function inventory(root) {
             const stat = lstatSync(path);
             if (stat.isSymbolicLink()) throw Error("symlink_in_staging_source");
             if (stat.isDirectory()) visit(path, `${relative}/`);
-            else if (stat.isFile()) result[relative] = hash(readFileSync(path));
+            else if (stat.isFile()) result[relative] = hash(regularBytes(path, undefined, 64 * 1024 * 1024));
             else throw Error("unsupported_staging_file");
         }
     }
     visit(root); return result;
 }
 function buildInfo(source, commit) {
-    const header = readFileSync(join(source, "buildInfo.ts"), "utf8").split("export const")[0];
+    const header = regularBytes(join(source, "buildInfo.ts"), "utf8").split("export const")[0];
     return `${header}export const BUILD_INFO = { commit: ${JSON.stringify(commit)}, upstream: ${JSON.stringify(UPSTREAM)} };\n`;
 }
 export function verifyStaged(project, destination, commit) {
     const source = join(project, "src"), canonical = inventory(source);
-    const m = JSON.parse(readFileSync(join(destination, ".presence-guard-stage.json"), "utf8"));
+    const m = JSON.parse(regularBytes(join(destination, ".presence-guard-stage.json"), "utf8"));
     const expected = { ...canonical, "buildInfo.ts": hash(buildInfo(source, commit)) };
     const actual = inventory(destination); delete actual[".presence-guard-stage.json"];
     if (m.version !== 1 || m.commit !== commit || m.upstream !== UPSTREAM || m.sourceHash !== hash(JSON.stringify(canonical)) || JSON.stringify(m.files) !== JSON.stringify(expected) || JSON.stringify(actual) !== JSON.stringify(expected)) throw Error("staging_not_canonical_reviewed_source");
@@ -34,7 +35,9 @@ export function verifyStaged(project, destination, commit) {
 export function stage(project, vencord, dryRun = false) {
     const gitRoot = execFileSync("git", ["-C", vencord, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
     if (resolve(gitRoot) !== resolve(vencord)) throw Error("staging_requires_vencord_git_root");
-    const receiptPath = execFileSync("git", ["-C", vencord, "rev-parse", "--path-format=absolute", "--git-path", "presence-guard-stage.json"], { encoding: "utf8" }).trim();
+    const gitDirectory = execFileSync("git", ["-C", vencord, "rev-parse", "--absolute-git-dir"], { encoding: "utf8" }).trim();
+    // Resolve only the Git directory: --git-path canonicalizes a symlink at the receipt itself.
+    const receiptPath = join(gitDirectory, "presence-guard-stage.json");
     const destination = join(resolve(vencord), "src/userplugins/presenceGuard");
     const commit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const source = join(project, "src"), files = inventory(source);
@@ -43,10 +46,10 @@ export function stage(project, vencord, dryRun = false) {
         if (lstatSync(destination).isSymbolicLink()) throw Error("unexpected_staging_symlink");
         const marker = join(destination, ".presence-guard-stage.json");
         if (!existsSync(marker)) throw Error("unowned_staging_directory");
-        const markerBytes = readFileSync(marker), old = JSON.parse(markerBytes), actual = inventory(destination);
+        const markerBytes = regularBytes(marker), old = JSON.parse(markerBytes), actual = inventory(destination);
         if (existsSync(receiptPath)) {
             if (lstatSync(receiptPath).isSymbolicLink()) throw Error("staging_receipt_symlink");
-            const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+            const receipt = JSON.parse(regularBytes(receiptPath, "utf8"));
             if (receipt.version !== 1 || receipt.markerHash !== hash(markerBytes) || receipt.commit !== old.commit || receipt.sourceHash !== old.sourceHash) throw Error("staging_receipt_drift");
         } else {
             // A legacy tree may be attested only when every byte matches current canonical source.

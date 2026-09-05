@@ -1,22 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFileSync } from "node:child_process";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
+import { regularBytes } from "./regular-file.mjs";
 import { compileHelper } from "./helper-build.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-function regularBytes(path, encoding, max = 4 * 1024 * 1024) {
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-    try {
-        const stat = fstatSync(fd);
-        if (!stat.isFile() || stat.size > max) throw Error("unsafe_regular_file");
-        const buffer = Buffer.alloc(stat.size + 1), count = readSync(fd, buffer, 0, buffer.length, 0);
-        if (count !== stat.size) throw Error("file_changed_during_read");
-        return encoding ? buffer.subarray(0, count).toString(encoding) : buffer.subarray(0, count);
-    } finally { closeSync(fd); }
-}
 const read = path => JSON.parse(regularBytes(path, "utf8"));
 const shellQuote = s => `'${s.replaceAll("'", "'\\''")}'`;
 export const PARENT_START_AWK = '{sub(/^.*\\) /, ""); print $20}';
@@ -226,8 +217,11 @@ export async function main(args) {
     if (action === "inspect") return console.log(JSON.stringify(inspect(c), null, 2));
     if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(stage(project, c.vencordRoot, dry), null, 2)); }
     if (action === "prepare") {
+        verifyWiring(c); // Authenticate the executable and mode before staging or running it.
         if (dry) return console.log(JSON.stringify(stage(project, c.vencordRoot, true)));
-        execFileSync(process.execPath, [fileURLToPath(import.meta.url), "stage", "--config", path], { stdio: "inherit" }); execFileSync(c.updater, ["rebuild"], { stdio: "inherit" }); return;
+        execFileSync(process.execPath, [fileURLToPath(import.meta.url), "stage", "--config", path], { stdio: "inherit" });
+        verifyWiring(c);
+        execFileSync(c.updater, ["rebuild"], { stdio: "inherit" }); return;
     }
     if (action === "pin" && locked) { verifyWiring(c); pinBaseline(c); return; }
     if (!["install", "update", "rollback", "uninstall"].includes(action)) throw Error("unknown_install_action");
