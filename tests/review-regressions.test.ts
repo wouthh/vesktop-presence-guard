@@ -101,3 +101,17 @@ test("update rejects a missing installed helper or configuration before mutation
     assert.throws(() => planHelper(c), /installed_helper_drift/);
     assert.equal(readFileSync(c.mainLauncher, "utf8"), launcher); assert.deepEqual(readdirSync(c.mainProfile), ["PresenceGuard"]);
 });
+
+test("orphaned configuration and unsafe helper logs or directories stop first installation", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, mainProfile: join(root, "main"), mainLauncher: join(root, "launcher"), ledger: join(root, "ledger") };
+    const native = join(c.mainProfile, "PresenceGuard"), config = join(native, "installation.json"), log = join(native, "helper.log");
+    mkdirSync(native, { recursive: true }); mkdirSync(c.ledger); writeFileSync(c.mainLauncher, "#!/bin/sh\nexec mullvad-exclude flatpak run dev.vencord.Vesktop\n");
+    writeFileSync(config, JSON.stringify({ version: 1, snapshot: join(root, ".presence-guard/display.json"), welcome: false }));
+    assert.throws(() => planHelper(c), /unowned_helper_configuration/); unlinkSync(config);
+    mkdirSync(log); assert.throws(() => planHelper(c), /unsafe_target_file/); rmSync(log, { recursive: true });
+    symlinkSync(c.mainLauncher, log); assert.throws(() => planHelper(c), /unsafe_target_file/); unlinkSync(log);
+    writeFileSync(log, "", { mode: 0o400 }); assert.throws(() => planHelper(c), /target_not_writable/); unlinkSync(log);
+    rmSync(native, { recursive: true }); symlinkSync(join(root, "missing"), native);
+    assert.throws(() => planHelper(c), /helper_directory_drift/);
+});

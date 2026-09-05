@@ -10,6 +10,7 @@ import { type Adapter, type Clock, fresh, type HistoryEvent, type Options, type 
 export class PresenceEngine {
     private generation = 0;
     private timer: unknown;
+    private scheduledRule: Rule | null = null;
     private busy = false;
     private stopped = false;
     private pending: WriteToken | null = null;
@@ -36,6 +37,7 @@ export class PresenceEngine {
         this.generation++;
         if (this.timer !== undefined) this.clock.clear(this.timer);
         this.timer = undefined;
+        this.scheduledRule = null;
         this.pending = null;
         if (!keepOwner) this.owner = null;
     }
@@ -59,6 +61,7 @@ export class PresenceEngine {
     external(source: Source = "unknown") {
         if (this.owner) this.paused.add(this.owner.rule);
         if (this.pending) this.paused.add(this.pending.rule);
+        if (this.scheduledRule) this.paused.add(this.scheduledRule);
         this.invalidate();
         this.emit("boundary", "unattributed_status_write", source, this.adapter.read());
     }
@@ -74,7 +77,7 @@ export class PresenceEngine {
                 this.invalidate(true);
                 this.emit("skip", "pending_rule_disabled_owner_retained_if_matching", "plugin", this.adapter.read());
             } else if (this.timer !== undefined) {
-                this.clock.clear(this.timer); this.timer = undefined; this.generation++;
+                this.clock.clear(this.timer); this.timer = undefined; this.scheduledRule = null; this.generation++;
             }
         }
         this.options = { ...next };
@@ -163,8 +166,10 @@ export class PresenceEngine {
         }
         if (simulation || this.busy || this.timer !== undefined || !d.target || !d.rule || d.target === s.effective) return;
         const token: WriteToken = { generation: this.generation, target: d.target, rule: d.rule };
+        this.scheduledRule = d.rule;
         this.timer = this.clock.set(() => {
             this.timer = undefined;
+            this.scheduledRule = null;
             const guard = () => {
                 const current = this.adapter.read();
                 const next = this.decide(current);

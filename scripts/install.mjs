@@ -122,17 +122,20 @@ export function pinBaseline(c) {
 export function planHelper(c) {
     const root = join(c.vencordRoot, ".presence-guard"), native = join(c.mainProfile, "PresenceGuard");
     for (const path of [root, native]) {
-        if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw Error("helper_directory_drift");
-        accessSync(existsSync(path) ? path : dirname(path), constants.W_OK);
+        const stat = statOrNull(path);
+        if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) throw Error("helper_directory_drift");
+        accessSync(stat ? path : dirname(path), constants.W_OK);
     }
     writableTarget(c.mainLauncher);
     for (const name of ["installed-launcher.sha256", "installed.json"]) writableTarget(join(c.ledger, name), true);
     accessSync(c.ledger, constants.W_OK);
+    if (existsSync(native)) writableTarget(join(native, "helper.log"), true);
     const configPath = join(native, "installation.json");
     if (existsSync(configPath) && (lstatSync(configPath).isSymbolicLink() || read(configPath).snapshot !== join(root, "display.json") || read(configPath).version !== 1)) throw Error("helper_configuration_drift");
     const helperPath = join(root, "display-helper.mjs"), receipt = join(c.ledger, "installed.json");
     const helperStat = statOrNull(helperPath), hasReceipt = existsSync(receipt);
     if (hasReceipt && !existsSync(configPath)) throw Error("installed_helper_configuration_missing");
+    if (!hasReceipt && statOrNull(configPath)) throw Error("unowned_helper_configuration");
     if (Boolean(helperStat) !== hasReceipt || (helperStat && (!helperStat.isFile() || helperStat.isSymbolicLink() || hash(readFileSync(helperPath)) !== read(receipt).helperHash))) throw Error("installed_helper_drift");
     const launcher = readFileSync(c.mainLauncher, "utf8");
     const marker = "# PresenceGuard process-bound observer";

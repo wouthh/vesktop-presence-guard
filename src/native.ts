@@ -6,13 +6,13 @@
 
 import { DATA_DIR } from "@main/utils/constants";
 import { execFile } from "child_process";
-import { randomUUID } from "crypto";
 import { app, dialog, IpcMainInvokeEvent } from "electron";
 import { constants } from "fs";
-import { lstat, mkdir, open, rename, unlink, writeFile } from "fs/promises";
+import { lstat, mkdir, open, writeFile } from "fs/promises";
 import { isAbsolute, join } from "path";
 
 import { retain } from "./core/history";
+import { atomicLocalFile } from "./core/localFile";
 import { HistoryEvent, status } from "./core/types";
 
 const directory = join(DATA_DIR, "PresenceGuard");
@@ -35,11 +35,7 @@ async function bounded(path: string, max = 1024 * 1024) {
 }
 async function atomic(name: string, data: unknown) {
     await ready();
-    const destination = join(directory, name);
-    const temp = `${destination}.${randomUUID()}.tmp`;
-    const file = await open(temp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-    try { await file.writeFile(JSON.stringify(data)); await file.sync(); } finally { await file.close(); }
-    try { await rename(temp, destination); } catch (error) { await unlink(temp); throw error; }
+    await atomicLocalFile(join(directory, name), data);
 }
 function serial<T>(f: () => Promise<T>): Promise<T> {
     const result = queue.then(f, f);

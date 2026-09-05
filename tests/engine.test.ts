@@ -174,3 +174,11 @@ for (const choice of ["idle", "dnd", "invisible", "unknown"] as const) test(`pen
     if (choice !== "unknown") { f.s.configured = f.s.effective = choice; f.engine.sample("manual"); await f.advance(); assert.deepEqual(f.writes, []); }
     f.manual("online"); f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
 });
+
+for (const rule of ["idle", "camera"] as const) test(`unattributed intervention during ${rule} debounce pauses that rule`, async () => {
+    const f = fixture({ idle: rule === "idle", camera: rule === "camera" });
+    f.signal(rule === "idle" ? "inactive" : "active", rule === "camera" ? "active" : "inactive");
+    f.engine.external("external"); f.engine.sample(); await f.advance();
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.engine.pausedRules, [rule]);
+    f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, [rule === "idle" ? "idle" : "dnd"]);
+});

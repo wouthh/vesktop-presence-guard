@@ -27,7 +27,7 @@ Idle are separate values; native idle is never adopted as plugin ownership.
 History is profile-local in the native Vencord data directory's `PresenceGuard`
 subdirectory, outside cloud-synced settings. It retains at most 500 events and
 seven days (pruned on reads/writes while running), uses restrictive permissions
-and atomic writes, and contains no
+and atomic writes with temporary-file cleanup on failure, and contains no
 account IDs. Clear it in the panel or explicitly export JSON to a chosen local
 file. Nothing is uploaded. Local observations do not independently prove what
 another session or user sees. Confirmation means Discord applied the local
@@ -72,7 +72,8 @@ platforms are not implemented or claimed tested. Vencord integration is pinned t
 Discord changes independently; runtime patch checks fail closed.
 
 - **Display:** a GJS/Gio helper reads Mutter power state, logical monitor topology,
-  idle time, lock and suspend signals. It follows the desktop's existing idle
+  idle time, lock and suspend signals, reconciling current login1 sleep state
+  after subscription gaps. It follows the desktop's existing idle
   delay, changes no power policy, requires a preceding inactivity-to-blanking
   sequence and labels its cause **inferred**. A manual lock, monitor removal,
   startup already blanked, provider restart or suspend gap cannot establish that

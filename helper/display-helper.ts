@@ -28,7 +28,6 @@ function call(bus: any, name: string, path: string, iface: string, method: strin
 const session = Gio.DBus.session;
 const system = Gio.DBus.system;
 const settings = new Gio.Settings({ schema_id: "org.gnome.desktop.session" });
-let suspended = false;
 const instance = GLib.uuid_string_random();
 let provider = 0;
 let lastLease = false;
@@ -56,24 +55,25 @@ async function observe() {
     if (lastStart && at - lastStart > 10000) provider++;
     lastStart = at;
     try {
-        const [power, idle, locked, topology, owner] = await Promise.all([
+        const [power, idle, locked, topology, owner, sleep] = await Promise.all([
             call(session, "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.freedesktop.DBus.Properties", "Get", new GLib.Variant("(ss)", ["org.gnome.Mutter.DisplayConfig", "PowerSaveMode"])),
             call(session, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "GetIdletime"),
             call(session, "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver", "GetActive"),
             call(session, "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.gnome.Mutter.DisplayConfig", "GetCurrentState"),
-            call(session, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", new GLib.Variant("(s)", ["org.gnome.Mutter.DisplayConfig"]))
+            call(session, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", new GLib.Variant("(s)", ["org.gnome.Mutter.DisplayConfig"])),
+            call(system, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.DBus.Properties", "Get", new GLib.Variant("(ss)", ["org.freedesktop.login1.Manager", "PreparingForSleep"]))
         ]);
         const logical = topology[2];
         if (!Array.isArray(logical)) throw Error();
         // Do not persist monitor names/serials. Geometry and connector count suffice for continuity.
         const shape = logical.map((m: any[]) => [m[0], m[1], m[2], m[3], m[5]?.length]);
-        const observation = { at, power: power[0].deepUnpack(), idleMs: Number(idle[0]), thresholdMs: settings.get_uint("idle-delay") * 1000, locked: locked[0], suspended, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
+        const observation = { at, power: power[0].deepUnpack(), idleMs: Number(idle[0]), thresholdMs: settings.get_uint("idle-delay") * 1000, locked: locked[0], suspended: sleep[0].deepUnpack(), topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
         if (lastLease && identity()) write({ version: 1, at, observation });
     } catch { provider++; write({ version: 1, at, observation: null, reason: "gnome_provider_unavailable" }); }
     finally { busy = false; }
 }
 function startSubscriptions() {
-subscribe(system, "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", (...args: any[]) => { suspended = args[5].deepUnpack()[0]; provider++; void observe(); });
+subscribe(system, "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", () => { provider++; void observe(); });
 subscribe(session, "org.gnome.Mutter.DisplayConfig", "org.freedesktop.DBus.Properties", "PropertiesChanged", "/org/gnome/Mutter/DisplayConfig", () => { void observe(); });
 subscribe(session, "org.gnome.Mutter.DisplayConfig", "org.gnome.Mutter.DisplayConfig", "MonitorsChanged", "/org/gnome/Mutter/DisplayConfig", () => { provider++; void observe(); });
 subscribe(session, "org.gnome.ScreenSaver", "org.gnome.ScreenSaver", "ActiveChanged", "/org/gnome/ScreenSaver", () => { void observe(); });
