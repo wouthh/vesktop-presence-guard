@@ -165,3 +165,12 @@ test("failed clear reloads retained startup history and preserves events receive
     await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at)), /read_only_storage/);
     assert.deepEqual(events, [old, recent]);
 });
+
+for (const choice of ["idle", "dnd", "invisible", "unknown"] as const) test(`pending manual ${choice} blocks acquisition from the old Online preference`, async () => {
+    const f = fixture(); f.engine.manual(choice);
+    f.signal("inactive", "active"); await f.advance(); f.signal("inactive", "active"); await f.advance();
+    assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null);
+    assert.equal(f.engine.latestDecision, "manual_selection_awaiting_configured_status");
+    if (choice !== "unknown") { f.s.configured = f.s.effective = choice; f.engine.sample("manual"); await f.advance(); assert.deepEqual(f.writes, []); }
+    f.manual("online"); f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
+});

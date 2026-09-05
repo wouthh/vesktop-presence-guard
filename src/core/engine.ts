@@ -18,6 +18,7 @@ export class PresenceEngine {
     private paused = new Set<Rule>();
     private decisionKey = "";
     private detectorEpoch = -Infinity;
+    private manualPending: Status | null = null;
     latestDecision = "starting";
     constructor(private adapter: Adapter, private clock: Clock, private options: Options) {}
 
@@ -41,12 +42,14 @@ export class PresenceEngine {
 
     boundary(reason: string) {
         this.invalidate();
+        this.manualPending = null;
         this.detectorEpoch = this.clock.now();
         this.emit("boundary", reason, "unknown", this.adapter.read());
     }
 
     manual(value: Status) {
         this.invalidate();
+        this.manualPending = value === "online" ? null : value;
         if (value === "online") this.paused.clear();
         this.decisionKey = "";
         this.emit("boundary", "manual_selection_ownership_revoked", "manual", this.adapter.read(), undefined, value);
@@ -94,6 +97,9 @@ export class PresenceEngine {
         if (this.stopped) return;
         const s = this.adapter.read();
         if (this.previous && s.account !== this.previous.account) this.boundary("account_changed");
+        // The picker runs before Discord asynchronously loads and applies settings.
+        // A non-Online selection blocks acquisition while the old preference is Online.
+        if (this.manualPending !== "unknown" && s.configured === this.manualPending) this.manualPending = null;
         if (!s.connected || !s.account || !s.capable) {
             if (this.owner || this.pending || this.timer !== undefined) this.boundary("connection_or_capability_uncertain");
         }
@@ -116,12 +122,13 @@ export class PresenceEngine {
     }
 
     private eligible(s: Snapshot) {
-        if (!s.connected || !s.capable || !s.account) return false;
+        if (!s.connected || !s.capable || !s.account || this.manualPending !== null) return false;
         if (this.owner) return s.effective === this.owner.status && s.configured === this.owner.status;
         return s.configured === "online" && s.effective === "online";
     }
 
     private decide(s: Snapshot, simulation = false): { target?: Status; rule?: Rule; reason: string } {
+        if (this.manualPending !== null) return { reason: "manual_selection_awaiting_configured_status" };
         if (!this.eligible(s)) return { reason: "non_owned_or_uncertain_status" };
         const camera = simulation || this.options.camera;
         const idle = simulation || this.options.idle;
