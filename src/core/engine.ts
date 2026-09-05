@@ -20,6 +20,7 @@ export class PresenceEngine {
     private decisionKey = "";
     private detectorEpoch = -Infinity;
     private manualPending: Status | null = null;
+    private confirmedAccount: string | null = null;
     latestDecision = "starting";
     constructor(private adapter: Adapter, private clock: Clock, private options: Options) {}
 
@@ -44,6 +45,7 @@ export class PresenceEngine {
 
     boundary(reason: string) {
         this.invalidate();
+        if (reason === "logout") { this.manualPending = null; this.confirmedAccount = null; }
         this.detectorEpoch = this.clock.now();
         this.emit("boundary", reason, "unknown", this.adapter.read());
     }
@@ -98,13 +100,14 @@ export class PresenceEngine {
     sample(source: Source = "unknown", token?: WriteToken) {
         if (this.stopped) return;
         const s = this.adapter.read();
-        if (this.previous && s.account !== this.previous.account) {
+        if (s.account && this.confirmedAccount && s.account !== this.confirmedAccount) {
             this.manualPending = null;
             this.boundary("account_changed");
         }
+        if (s.account) this.confirmedAccount = s.account;
         // The picker runs before Discord asynchronously loads and applies settings.
         // A non-Online selection blocks acquisition while the old preference is Online.
-        if (this.manualPending !== "unknown" && s.configured === this.manualPending) this.manualPending = null;
+        if (s.account && this.manualPending !== "unknown" && s.configured === this.manualPending) this.manualPending = null;
         if (!s.connected || !s.account || !s.capable) {
             if (this.owner || this.pending || this.timer !== undefined) this.boundary("connection_or_capability_uncertain");
         }

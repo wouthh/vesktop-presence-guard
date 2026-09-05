@@ -191,3 +191,12 @@ test("an unresolved manual choice stays protected across same-account reconnects
     f.s.account = "different-synthetic-account"; f.engine.sample(); await f.advance();
     f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
 });
+
+test("an unknown account during reconnect cannot revoke unresolved manual intent", async () => {
+    const f = fixture(); f.engine.sample(); f.engine.manual("dnd");
+    f.s.connected = false; f.s.account = null; f.engine.boundary("connection_closed"); f.engine.sample(); await f.advance();
+    f.s.connected = true; f.s.account = "synthetic"; f.engine.boundary("connection_open_new_epoch"); await f.advance();
+    f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, []);
+    f.engine.boundary("logout"); f.s.account = null; f.engine.sample(); await f.advance();
+    f.s.account = "synthetic"; f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
+});

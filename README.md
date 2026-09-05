@@ -48,7 +48,9 @@ action. Writes use exact callback/update-object provenance, serialized execution
 and generation checks inside Discord's asynchronous settings callback. Only the
 manual selection's new configured value can release a pending non-Online intent
 guard; the old Online preference cannot authorize another write while it loads.
-This guard survives a same-account reconnect. An explicit manual Online selection
+This guard survives a same-account reconnect and a temporarily unknown account;
+only a confirmed different account or explicit logout clears its account scope.
+An explicit manual Online selection
 permits fresh evaluation. Only the
 status field changes; duration and other profile fields stay intact. Observable
 unattributed writes revoke ownership. An unreported cross-device **same-value**
