@@ -150,7 +150,10 @@ restore whole profile backups over newer authentication or unrelated settings.
 ## Interrupted integration
 
 Before activation or rollback, the installer durably prepares the exact target
-files and records an `integration-transaction.json` in the private ledger.
+files and atomically publishes a complete `integration-transaction.json` in the
+private ledger. A crash during journal preparation leaves the published journal
+absent and the live integration untouched. Recovery authenticates the original
+descriptor paths and unchanged updater/receipt, including complete permission bits.
 Both profiles must remain closed. Repeating the interrupted command verifies the
 recorded releases, prepared file images, and every current target against its
 before/after states, then finishes the recorded operation. Unexpected edits stop
@@ -169,8 +172,8 @@ bypass validation.
 
 The integration check and installation staging also share a per-checkout lock
 beside the Vencord directory (`.presence-guard-stage.lock` suffix). The integration
-check holds it through validation/build; installation keeps its maintained-updater
-lock as well. This prevents competing checks from recovering a live transaction.
+check holds it through validation/build; preparation holds it continuously through
+staging and the maintained-updater build, together with the updater lock. This prevents competing checks from recovering a live transaction.
 
 GNOME's `ScreenSaver.GetActive` exposes screen-shield activity, not an authentication
 lock. The helper reads `login1.Session.LockedHint` separately and validates that

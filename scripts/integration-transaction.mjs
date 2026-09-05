@@ -12,16 +12,18 @@ export const integrationPaths = c => ({
     helper: join(c.vencordRoot, ".presence-guard/display-helper.mjs"),
     helperConfig: join(c.mainProfile, "PresenceGuard/installation.json"),
     lease: join(c.mainProfile, "PresenceGuard/lease.json"),
-    launcherReceipt: join(c.ledger, "installed-launcher.sha256"),
+    launcherReceipt: join(c.ledger, "installed-launcher.sha256"), updaterReceipt: join(c.ledger, "installed-updater.sha256"),
     installed: join(c.ledger, "installed.json"), rolledBack: join(c.ledger, "rolled-back.json")
 });
 const journalPath = c => join(c.ledger, "integration-transaction.json");
+const descriptorHash = c => hash(JSON.stringify(Object.fromEntries(["vencordRoot", "mainProfile", "altProfile", "mainLauncher", "updater", "updaterLock", "updaterPending", "ledger"].map(key => [key, c[key] ?? null]))));
 const present = path => { try { return fs.lstatSync(path); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const imagePath = (path, id) => join(dirname(path), `.${basename(path)}.presence-guard-${id}.image`);
 function state(path) {
     const stat = present(path);
-    return stat ? { hash: hash(regularBytes(path)), mode: stat.mode & 0o777 } : null;
+    if (stat && stat.mode & 0o7000) throw Error("unexpected_special_permission_bits");
+    return stat ? { hash: hash(regularBytes(path)), mode: stat.mode & 0o7777 } : null;
 }
 function retained(c, path) {
     const root = fs.realpathSync(join(c.vencordRoot, ".wout-releases"));
@@ -39,6 +41,8 @@ export function pendingIntegration(c) {
     const tx = JSON.parse(regularBytes(journalPath(c), "utf8", 1024 * 1024));
     if (tx.version !== 1 || !["install", "rollback"].includes(tx.kind) || !/^[a-f0-9-]{36}$/.test(tx.id) || !/^[a-f0-9]{40}$/.test(tx.commit) || !Array.isArray(tx.files) || !tx.files.length || tx.files.length > 9 || new Set(tx.files.map(f => f.key)).size !== tx.files.length) throw Error("invalid_integration_transaction");
     const paths = integrationPaths(c);
+    if (tx.descriptorHash !== descriptorHash(c)) throw Error("integration_descriptor_drift");
+    if (!same(Object.keys(tx.guards ?? {}), tx.kind === "install" ? ["updater", "updaterReceipt"] : ["updaterReceipt"])) throw Error("invalid_integration_guards");
     for (const file of tx.files) {
         if (!Object.hasOwn(paths, file.key)) throw Error("invalid_integration_target");
         for (const s of [file.before, file.after]) if (s !== null && (!s || !/^[a-f0-9]{64}$/.test(s.hash) || !Number.isInteger(s.mode) || s.mode < 0 || s.mode > 0o777)) throw Error("invalid_integration_file_state");
@@ -49,7 +53,9 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
     if (present(journalPath(c))) throw Error("integration_recovery_required");
     if (!["install", "rollback"].includes(kind) || !/^[a-f0-9]{40}$/.test(commit)) throw Error("invalid_integration_identity");
     const paths = integrationPaths(c), id = randomUUID(), created = [];
-    const tx = { version: 1, kind, commit, id, beforeDist: retained(c, fs.realpathSync(join(c.vencordRoot, "dist"))), afterDist: retained(c, afterDist), files: [] };
+    const guards = Object.fromEntries((kind === "install" ? ["updater", "updaterReceipt"] : ["updaterReceipt"]).map(key => [key, state(paths[key])]));
+    if (Object.values(guards).some(value => !value)) throw Error("integration_wiring_missing");
+    const tx = { version: 1, kind, commit, id, descriptorHash: descriptorHash(c), guards, beforeDist: retained(c, fs.realpathSync(join(c.vencordRoot, "dist"))), afterDist: retained(c, afterDist), files: [] };
     try {
         for (const { key, data, mode = 0o600 } of changes) {
             if (!Object.hasOwn(paths, key) || tx.files.some(f => f.key === key)) throw Error("invalid_integration_target");
@@ -67,7 +73,9 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
         }
         // Preparing images can take time: do not adopt edits made in the meantime.
         for (const file of tx.files) if (!same(state(paths[file.key]), file.before)) throw Error("integration_target_changed_during_preparation");
-        durable(journalPath(c), JSON.stringify(tx), 0o600, io); syncDirectory(c.ledger, io);
+        const journalImage = join(c.ledger, `.integration-transaction-${id}.new`);
+        durable(journalImage, JSON.stringify(tx), 0o600, io); created.push(journalImage);
+        io.renameSync(journalImage, journalPath(c)); created.pop(); syncDirectory(c.ledger, io);
         return tx;
     } catch (error) {
         if (!present(journalPath(c))) for (const image of created) io.unlinkSync(image);
@@ -75,6 +83,8 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
     }
 }
 function validate(c, tx) {
+    if (tx.descriptorHash !== descriptorHash(c)) throw Error("integration_descriptor_drift");
+    for (const [key, expected] of Object.entries(tx.guards)) if (!same(state(integrationPaths(c)[key]), expected)) throw Error("integration_wiring_drift");
     if (!same(retained(c, tx.afterDist.path), tx.afterDist)) throw Error("integration_candidate_drift");
     const current = fs.realpathSync(join(c.vencordRoot, "dist"));
     if (current !== tx.beforeDist.path && current !== tx.afterDist.path) throw Error("integration_active_release_drift");

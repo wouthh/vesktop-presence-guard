@@ -3,10 +3,10 @@ import { execFileSync } from "node:child_process";
 import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hash, inventory, verifyStaged } from "./staging.mjs";
+import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
 import { regularBytes, descriptorBytes } from "./regular-file.mjs";
 import { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
-import { lockedStage } from "./locked-stage.mjs";
+import { lockedStage, stageLock } from "./locked-stage.mjs";
 import { finishIntegration, pendingIntegration, prepareIntegration } from "./integration-transaction.mjs";
 import { compileHelper } from "./helper-build.mjs";
 
@@ -77,7 +77,7 @@ export function verifyWiring(c) {
     let modes;
     if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json"))) modes = pinBaseline(c).modes;
     else { backupHashes(c); modes = originalModes(c); }
-    for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o777) !== mode) throw Error(`${key}_mode_drift`);
+    for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o7777) !== mode) throw Error(`${key}_mode_drift`);
     return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
 }
 export { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
@@ -89,7 +89,7 @@ export function runUpdater(c, action, execute = execFileSync) {
     const fd = openSync(c.updater, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
         const expected = regularBytes(join(c.ledger, "installed-updater.sha256"), "utf8", 128).trim();
-        if (hash(descriptorBytes(fd)) !== expected || (fstatSync(fd).mode & 0o777) !== wiring.updaterMode) throw Error("updater_descriptor_drift");
+        if (hash(descriptorBytes(fd)) !== expected || (fstatSync(fd).mode & 0o7777) !== wiring.updaterMode) throw Error("updater_descriptor_drift");
         // Linux preserves these inherited descriptors through the script's shebang.
         // The reviewed updater validates FD 4 against its lock before accepting it.
         return execute("/proc/self/fd/3", [action], { stdio: ["inherit", "inherit", "inherit", fd, Number(lock)], env: { ...process.env, PRESENCE_GUARD_LOCK_FD: "4" } });
@@ -232,7 +232,14 @@ export async function main(args) {
     const c = descriptor(resolve(path)), dry = args.includes("--dry-run");
     const locked = args.includes("--locked");
     if (locked && !holdsUpdaterLock(c.updaterLock)) throw Error("updater_lock_not_held");
-    const underLock = (childArgs = args) => { mkdirSync(dirname(c.updaterLock), { recursive: true, mode: 0o700 }); return execFileSync("/usr/bin/flock", ["--no-fork", "-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), ...childArgs, "--locked"], { stdio: "inherit" }); };
+    const underLock = (childArgs = args) => {
+        mkdirSync(dirname(c.updaterLock), { recursive: true, mode: 0o700 });
+        const command = [process.execPath, fileURLToPath(import.meta.url), ...childArgs, "--locked"];
+        // Both no-fork wrappers become the same Node process, retaining both locks
+        // through staging and the synchronous maintained-updater rebuild.
+        if (action === "prepare") command.unshift("/usr/bin/flock", "--no-fork", "-n", stageLock(c.vencordRoot));
+        return execFileSync("/usr/bin/flock", ["--no-fork", "-n", c.updaterLock, ...command], { stdio: "inherit" });
+    };
     if (action === "inspect") return console.log(JSON.stringify(inspect(c), null, 2));
     if (["stage", "prepare"].includes(action) && pendingIntegration(c)) throw Error("integration_recovery_required_use_install_or_rollback");
     if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(lockedStage(project, c.vencordRoot, dry), null, 2)); }
@@ -240,7 +247,8 @@ export async function main(args) {
         if (!dry && !locked) return underLock();
         verifyWiring(c); // Authenticate the executable and mode before staging or running it.
         if (dry) return console.log(JSON.stringify(lockedStage(project, c.vencordRoot, true)));
-        console.log(JSON.stringify(lockedStage(project, c.vencordRoot)));
+        if (!holdsUpdaterLock(stageLock(c.vencordRoot))) throw Error("preparation_stage_lock_not_held");
+        console.log(JSON.stringify(stage(project, c.vencordRoot)));
         runUpdater(c, "rebuild"); return;
     }
     if (!["install", "update", "rollback", "uninstall"].includes(action)) throw Error("unknown_install_action");
@@ -297,7 +305,7 @@ export async function main(args) {
     const currentSettings = preflightRollback(c);
     const baseline = pinBaseline(c);
     if (existsSync(rolledBack)) {
-        if (realpathSync(join(c.vencordRoot, "dist")) !== baseline.dist || hash(regularBytes(c.mainLauncher)) !== hash(regularBytes(join(c.ledger, "backups/main-launcher"))) || hash(regularBytes(c.updater)) !== hash(regularBytes(join(c.ledger, "backups/updater"))) || (lstatSync(c.mainLauncher).mode & 0o777) !== baseline.modes["main-launcher"] || (lstatSync(c.updater).mode & 0o777) !== baseline.modes.updater) throw Error("rollback_drift");
+        if (realpathSync(join(c.vencordRoot, "dist")) !== baseline.dist || hash(regularBytes(c.mainLauncher)) !== hash(regularBytes(join(c.ledger, "backups/main-launcher"))) || hash(regularBytes(c.updater)) !== hash(regularBytes(join(c.ledger, "backups/updater"))) || (lstatSync(c.mainLauncher).mode & 0o7777) !== baseline.modes["main-launcher"] || (lstatSync(c.updater).mode & 0o7777) !== baseline.modes.updater) throw Error("rollback_drift");
         return console.log("Previous integration is already restored; history retained.");
     }
     verifyWiring(c);

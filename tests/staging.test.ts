@@ -57,6 +57,10 @@ test("baseline pinning and wiring validation reject changed files", t => {
     writeFileSync(join(ledger, "installed-launcher.sha256"), hash("fixture")); verifyWiring(c);
     chmodSync(c.mainLauncher, 0o777); assert.throws(() => verifyWiring(c), /mainLauncher_mode_drift/); chmodSync(c.mainLauncher, 0o700);
     chmodSync(c.updater, 0o777); assert.throws(() => verifyWiring(c), /updater_mode_drift/); chmodSync(c.updater, 0o750);
+    for (const special of [0o1000, 0o2000, 0o4000]) {
+        chmodSync(c.mainLauncher, 0o700 | special); assert.throws(() => verifyWiring(c), /mainLauncher_mode_drift/); chmodSync(c.mainLauncher, 0o700);
+        chmodSync(c.updater, 0o750 | special); assert.throws(() => verifyWiring(c), /updater_mode_drift/); chmodSync(c.updater, 0o750);
+    }
     const umask = process.umask(0o077);
     try { restoreExecutables(c, pinBaseline(c)); } finally { process.umask(umask); }
     assert.equal(statSync(c.mainLauncher).mode & 0o777, 0o700); assert.equal(statSync(c.updater).mode & 0o777, 0o750);
