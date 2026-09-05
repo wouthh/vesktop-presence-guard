@@ -86,5 +86,6 @@ function cleanup() {
     try { write({ version: 1, at: Date.now(), observation: null, reason: "helper_stopped" }); } catch { /* Parent may have removed installation. */ }
 }
 GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, 15, () => { cleanup(); loop.quit(); return GLib.SOURCE_REMOVE; });
-void observe();
+// Start only after entering the main loop so an already-exited parent can quit it.
+GLib.idle_add(GLib.PRIORITY_DEFAULT, () => { void observe(); return GLib.SOURCE_REMOVE; });
 loop.run();
