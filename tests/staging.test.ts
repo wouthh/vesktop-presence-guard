@@ -38,3 +38,13 @@ test("helper lease expires, rejects future/malformed data, and identity handles 
     for (const v of [null, {}, { enabled: false, at: 100 }, { enabled: true, at: 0 }]) assert.equal(leaseActive(v, 10100), false);
     assert.equal(startIdentity(`123 (a process) ${Array.from({ length: 20 }, (_, i) => i === 19 ? "token" : "0").join(" ")}`), "token");
 });
+
+test("staging CLI creates an absent updater runtime directory and remains repeatable", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const mainProfile = join(root, "main"), altProfile = join(root, "alt"); mkdirSync(mainProfile); mkdirSync(altProfile);
+    writeFileSync(join(mainProfile, "state.json"), JSON.stringify({ vencordDir: join(root, "dist") }));
+    const c = { vencordRoot: root, mainProfile, altProfile, mainLauncher: join(root, "launcher"), updater: join(root, "updater"), ledger: join(root, "ledger"), updaterLock: join(root, "runtime/lock") };
+    const config = join(root, "private.json"); writeFileSync(config, JSON.stringify(c), { mode: 0o600 });
+    for (let i = 0; i < 2; i++) execFileSync(process.execPath, ["scripts/install.mjs", "stage", "--config", config], { stdio: "pipe" });
+    assert.equal(readFileSync(c.updaterLock, "utf8"), ""); assert(readFileSync(join(root, "src/userplugins/presenceGuard/.presence-guard-stage.json"), "utf8").includes('"version": 1'));
+});

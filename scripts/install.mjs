@@ -107,7 +107,7 @@ export async function main(args) {
     if (!args.includes("--config") || !path) throw Error("use --config with an owner-only installation descriptor");
     const c = descriptor(resolve(path)), dry = args.includes("--dry-run");
     const locked = args.includes("--locked");
-    const underLock = () => execFileSync("/usr/bin/flock", ["-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), ...args, "--locked"], { stdio: "inherit" });
+    const underLock = (childArgs = args) => { mkdirSync(dirname(c.updaterLock), { recursive: true, mode: 0o700 }); return execFileSync("/usr/bin/flock", ["-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), ...childArgs, "--locked"], { stdio: "inherit" }); };
     if (action === "inspect") return console.log(JSON.stringify(inspect(c), null, 2));
     if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(stage(project, c.vencordRoot, dry), null, 2)); }
     if (action === "prepare") {
@@ -124,7 +124,7 @@ export async function main(args) {
         // The maintained updater owns its own lock, candidate checks, backups and atomic activation.
         verifyWiring(c);
         if (!locked) {
-            execFileSync("/usr/bin/flock", ["-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), "pin", "--config", path, "--locked"], { stdio: "inherit" });
+            underLock(["pin", "--config", path]);
             execFileSync(c.updater, ["activate"], { stdio: "inherit" }); return underLock();
         }
         const active = realpathSync(join(c.vencordRoot, "dist"));
