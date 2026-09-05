@@ -28,9 +28,11 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 
 ## Validation and delivery
 
-The implementation will establish `pnpm check` as the canonical gate: lint,
-types, deterministic tests, privacy scan, helper build, and pinned upstream
-plugin integration. Until first execution, these commands are unverified.
+`pnpm check` is the canonical gate: lint, types, deterministic tests, privacy
+scan, helper build, and pinned upstream plugin integration. `pnpm test` is the
+focused engine/detector/adapter gate. `pnpm exec tsx scripts/check-client.ts`
+with an explicit local public-client script checks patch compatibility without
+executing client code. Physical camera/display cycles require human smoke tests.
 
 Bootstrap `main`, then use a feature branch. Preserve dirty work; no reset,
 stash, rebase, amend, or force-push. Use normal commits and a ready PR after
