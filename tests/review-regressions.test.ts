@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CameraTracks } from "../src/core/tracks";
 // @ts-expect-error Installation JavaScript is linted and tested directly.
-import { planHelper } from "../scripts/install.mjs";
+import { planHelper, planSettings } from "../scripts/install.mjs";
 // @ts-expect-error Build JavaScript is linted and tested directly.
 import { compileHelper } from "../scripts/helper-build.mjs";
 // @ts-expect-error Integration JavaScript is linted and tested directly.
@@ -23,6 +23,7 @@ test("camera pruning detaches listeners even when stop emits no ended event", ()
 });
 test("unsupported launcher is rejected by non-mutating preflight", t => {
     const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "main")); mkdirSync(join(root, "ledger"));
     const launcher = join(root, "launcher"); writeFileSync(launcher, "#!/bin/sh\nexec unsupported-launcher\n");
     const before = readdirSync(root);
     assert.throws(() => planHelper({ vencordRoot: root, mainProfile: join(root, "main"), mainLauncher: launcher, ledger: join(root, "ledger") }), /unsupported_launcher/);
@@ -40,4 +41,12 @@ test("integration rejects dirty tracked content and unrelated ignored plugins wi
     writeFileSync(join(root, ".gitignore"), "src/userplugins/\n"); writeFileSync(join(root, "upstream.ts"), "original"); git("init", "-q"); git("add", "."); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"); const head = git("rev-parse", "HEAD");
     verifyUpstream(root, head); writeFileSync(join(root, "upstream.ts"), "changed"); assert.throws(() => verifyUpstream(root, head), /dirty/); assert.equal(readFileSync(join(root, "upstream.ts"), "utf8"), "changed");
     writeFileSync(join(root, "upstream.ts"), "original"); mkdirSync(join(root, "src/userplugins/unrelated"), { recursive: true }); assert.throws(() => verifyUpstream(root, head), /unrelated/);
+});
+
+test("settings preflight rejects malformed and read-only files without mutating them", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    mkdirSync(join(root, "settings")); const path = join(root, "settings/settings.json");
+    writeFileSync(path, "{"); assert.throws(() => planSettings({ mainProfile: root })); assert.equal(readFileSync(path, "utf8"), "{");
+    const valid = JSON.stringify({ plugins: { Existing: { enabled: true } } }); writeFileSync(path, valid); chmodSync(path, 0o400);
+    assert.throws(() => planSettings({ mainProfile: root }), /writable/); assert.equal(readFileSync(path, "utf8"), valid);
 });

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PresenceEngine } from "../src/core/engine";
-import { retain, RETENTION_MS } from "../src/core/history";
+import { mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
 import type { HistoryEvent, Options, Snapshot, Status, WriteToken } from "../src/core/types";
 
@@ -125,4 +125,18 @@ test("new start epoch rejects fresh-looking detector values retained by an adapt
     const f = fixture(); f.s.display.value = "inactive"; f.s.camera.value = "active";
     f.engine.boundary("plugin_start_new_detector_epoch"); f.engine.sample(); await f.advance(); assert.deepEqual(f.writes, []);
     f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, []);
+});
+
+test("history loading preserves distinct same-millisecond observations", () => {
+    const f = fixture(); f.engine.sample(); const event = f.history.find(e => e.kind === "observation")!;
+    const changed: HistoryEvent = { ...event, status: "idle", configured: "online" };
+    assert.deepEqual(mergeHistory([event, changed], [event, changed], event.at), [event, changed]);
+});
+
+test("external intervention pauses both owner and in-flight transition rules", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    let release!: () => void; f.delayWrite(() => new Promise(r => { release = r; }));
+    f.signal("inactive", "active"); await f.advance(); f.engine.external("external");
+    f.s.configured = f.s.effective = "online"; release(); await f.flush(); await f.advance();
+    assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]); assert.deepEqual(f.writes, ["idle"]);
 });

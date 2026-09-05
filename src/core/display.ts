@@ -34,7 +34,7 @@ export class DisplayDetector {
             this.qualifying = false; this.manualLock = false;
             return UNKNOWN(scope, o.suspended ? "system_suspended" : "display_continuity_lost", o.at);
         }
-        if (p && !p.locked && o.locked && (o.thresholdMs <= 0 || o.idleMs < o.thresholdMs)) this.manualLock = true;
+        if (p && !p.locked && o.locked && p.power === 0) this.manualLock = true;
         if (o.power === 0 && !o.locked && o.idleMs < 5_000) {
             this.qualifying = false; this.manualLock = false;
             return { value: "active", at: o.at, scope, reason: "display_on_recent_session_activity" };
@@ -42,6 +42,6 @@ export class DisplayDetector {
         if (o.power !== 0 && p?.power === 0 && !this.manualLock && o.thresholdMs > 0 && o.idleMs >= o.thresholdMs && p.idleMs >= Math.max(0, o.thresholdMs - 3_000)) this.qualifying = true;
         if (o.power === 0) this.qualifying = false;
         if (this.qualifying && o.power !== 0 && o.idleMs >= o.thresholdMs && !this.manualLock) return { value: "inactive", at: o.at, scope, reason: "inferred_inactivity_blanking" };
-        return UNKNOWN(scope, this.manualLock ? "manual_lock_not_inactivity_proof" : "display_cause_or_return_uncertain", o.at);
+        return UNKNOWN(scope, this.manualLock ? "lock_before_or_with_blanking_is_ambiguous" : "display_cause_or_return_uncertain", o.at);
     }
 }

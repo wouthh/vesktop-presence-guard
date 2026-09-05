@@ -26,7 +26,8 @@ Idle are separate values; native idle is never adopted as plugin ownership.
 
 History is profile-local in the native Vencord data directory's `PresenceGuard`
 subdirectory, outside cloud-synced settings. It retains at most 500 events and
-seven days, uses restrictive permissions and atomic writes, and contains no
+seven days (pruned on reads/writes while running), uses restrictive permissions
+and atomic writes, and contains no
 account IDs. Clear it in the panel or explicitly export JSON to a chosen local
 file. Nothing is uploaded. Local observations do not independently prove what
 another session or user sees. Confirmation means Discord applied the local
@@ -72,7 +73,8 @@ Discord changes independently; runtime patch checks fail closed.
   delay, changes no power policy, requires a preceding inactivity-to-blanking
   sequence and labels its cause **inferred**. A manual lock, monitor removal,
   startup already blanked, provider restart or suspend gap cannot establish that
-  sequence. Return requires powered-on displays and recent actual activity.
+  sequence. Lock arriving before or together with blanking remains Unknown; the
+  interface cannot prove whether that lock was manual or automatic. Return requires powered-on displays and recent actual activity.
   Window visibility is not used. The helper collects only during a fresh plugin
   lease and exits with its owning main launch process. It publishes a bounded
   snapshot through an existing read-only build-directory grant; no added Flatpak

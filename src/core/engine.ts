@@ -55,7 +55,7 @@ export class PresenceEngine {
 
     external(source: Source = "unknown") {
         if (this.owner) this.paused.add(this.owner.rule);
-        else if (this.pending) this.paused.add(this.pending.rule);
+        if (this.pending) this.paused.add(this.pending.rule);
         this.invalidate();
         this.emit("boundary", "unattributed_status_write", source, this.adapter.read());
     }

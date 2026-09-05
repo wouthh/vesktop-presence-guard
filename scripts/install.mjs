@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hash, inventory, stage } from "./staging.mjs";
+import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
 import { compileHelper } from "./helper-build.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,10 +40,8 @@ export function inspect(c) {
 }
 function verifyCandidate(c) {
     const root = join(c.vencordRoot, "src/userplugins/presenceGuard");
-    const m = read(join(root, ".presence-guard-stage.json")), files = inventory(root); delete files[".presence-guard-stage.json"];
-    if (JSON.stringify(m.files) !== JSON.stringify(files)) throw Error("staging_drift");
     const expected = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    if (m.commit !== expected) throw Error("staged_commit_mismatch");
+    const m = verifyStaged(project, root, expected);
     const dirty = execFileSync("git", ["-C", project, "status", "--porcelain"], { encoding: "utf8" });
     if (dirty) throw Error("commit_and_validate_project_before_installation");
     return m;
@@ -67,22 +65,48 @@ export function verifyWiring(c) {
         if (hash(readFileSync(c[key])) !== expected) throw Error(`${key}_drift`);
     }
 }
+function backupHashes(c) {
+    const result = {};
+    for (const name of ["main-launcher", "updater", "main-plugins"]) {
+        const path = join(c.ledger, "backups", name), stat = lstatSync(path);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) throw Error("unsafe_backup");
+        if (name === "main-plugins" && (!read(path)?.plugins || typeof read(path).plugins !== "object" || Array.isArray(read(path).plugins))) throw Error("malformed_backup_settings");
+        result[name] = hash(readFileSync(path));
+    }
+    return result;
+}
+export function planSettings(c) {
+    const path = join(c.mainProfile, "settings/settings.json"), stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw Error("unsafe_settings_file");
+    if (!(stat.mode & 0o222)) throw Error("settings_not_writable");
+    accessSync(path, constants.R_OK | constants.W_OK); accessSync(dirname(path), constants.W_OK);
+    const value = read(path);
+    if (!value || typeof value !== "object" || Array.isArray(value) || !value.plugins || typeof value.plugins !== "object" || Array.isArray(value.plugins)) throw Error("malformed_plugin_settings");
+    return enableMain(value);
+}
 export function pinBaseline(c) {
     const root = join(c.vencordRoot, ".presence-guard"); mkdirSync(root, { recursive: true, mode: 0o700 });
     const path = join(root, "baseline.json");
     if (!existsSync(path)) {
         const dist = realpathSync(join(c.vencordRoot, "dist"));
         if (!dist.startsWith(`${realpathSync(join(c.vencordRoot, ".wout-releases"))}/`) || !dist.endsWith("/dist")) throw Error("baseline_not_retained_release");
-        atomic(path, JSON.stringify({ dist, files: inventory(dist) }));
+        atomic(path, JSON.stringify({ dist, files: inventory(dist), backups: backupHashes(c) }));
     }
     const baseline = read(path);
     if (typeof baseline.dist !== "string" || !baseline.dist.startsWith(`${realpathSync(join(c.vencordRoot, ".wout-releases"))}/`) || !baseline.dist.endsWith("/dist") || realpathSync(baseline.dist) !== baseline.dist) throw Error("baseline_path_drift");
     if (JSON.stringify(inventory(baseline.dist)) !== JSON.stringify(baseline.files)) throw Error("baseline_build_drift");
+    const backups = backupHashes(c);
+    if (!baseline.backups && !existsSync(join(c.ledger, "installed.json"))) { baseline.backups = backups; atomic(path, JSON.stringify(baseline)); }
+    if (JSON.stringify(baseline.backups) !== JSON.stringify(backups)) throw Error("backup_drift");
     return baseline;
 }
 export function planHelper(c) {
     const root = join(c.vencordRoot, ".presence-guard"), native = join(c.mainProfile, "PresenceGuard");
-    for (const path of [root, native]) if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw Error("helper_directory_drift");
+    for (const path of [root, native]) {
+        if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw Error("helper_directory_drift");
+        accessSync(existsSync(path) ? path : dirname(path), constants.W_OK);
+    }
+    accessSync(c.mainLauncher, constants.R_OK | constants.W_OK); accessSync(dirname(c.mainLauncher), constants.W_OK); accessSync(c.ledger, constants.W_OK);
     const configPath = join(native, "installation.json");
     if (existsSync(configPath) && (lstatSync(configPath).isSymbolicLink() || read(configPath).snapshot !== join(root, "display.json") || read(configPath).version !== 1)) throw Error("helper_configuration_drift");
     const helperPath = join(root, "display-helper.mjs"), receipt = join(c.ledger, "installed.json");
@@ -124,7 +148,7 @@ export async function main(args) {
     if (action === "pin" && locked) { verifyWiring(c); pinBaseline(c); return; }
     if (!["install", "update", "rollback", "uninstall"].includes(action)) throw Error("unknown_install_action");
     if (dry) {
-        if (action === "install" || action === "update") planHelper(c);
+        if (action === "install" || action === "update") { planSettings(c); planHelper(c); }
         return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper launcher", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
     }
     if (processes().length) throw Error("vesktop_running_close_identified_profiles_gracefully_after_call_capture_preflight");
@@ -133,6 +157,7 @@ export async function main(args) {
         const manifest = verifyCandidate(c);
         // The maintained updater owns its own lock, candidate checks, backups and atomic activation.
         verifyWiring(c);
+        const settings = planSettings(c);
         const plan = planHelper(c);
         const helper = compileHelper(project);
         if (!locked) {
@@ -145,7 +170,7 @@ export async function main(args) {
             if (!text.includes("PresenceGuard") || (file.includes("Renderer") && !text.includes(manifest.commit))) throw Error("active_build_identity_mismatch");
         }
         setupHelper(c, plan, helper);
-        atomic(settingsPath, JSON.stringify(enableMain(read(settingsPath))));
+        atomic(settingsPath, JSON.stringify(settings));
         const receipt = { commit: manifest.commit, helperHash: hash(helper), installedAt: new Date().toISOString(), dist: active, rendererHash: hash(readFileSync(join(active, "vencordDesktopRenderer.js"))), mainHash: hash(readFileSync(join(active, "vencordDesktopMain.js"))) };
         atomic(join(c.ledger, "installed.json"), JSON.stringify(receipt, null, 2));
         console.log(JSON.stringify(receipt, null, 2));

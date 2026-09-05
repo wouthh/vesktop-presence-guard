@@ -18,7 +18,8 @@ Before the first installation, the private ledger's `backups` directory must
 contain `main-launcher`, `updater`, and `main-plugins` (the original main Vencord
 settings JSON). Also back up both profiles' state/settings and the Alt launcher.
 The existing private updater needs a reviewed extension to include the exact
-PresenceGuard staging manifest, verify its hashes, preserve its source alongside
+PresenceGuard staging manifest, verify its hashes against canonical source,
+recheck candidate bundle hashes at activation, preserve its source alongside
 all existing custom plugins, and protect the release named in
 `.presence-guard/baseline.json` from retention pruning. Record its installed SHA256
 in `installed-updater.sha256` in the ledger. This project does not publish or

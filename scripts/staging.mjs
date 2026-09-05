@@ -19,6 +19,18 @@ export function inventory(root) {
     }
     visit(root); return result;
 }
+function buildInfo(source, commit) {
+    const header = readFileSync(join(source, "buildInfo.ts"), "utf8").split("export const")[0];
+    return `${header}export const BUILD_INFO = { commit: ${JSON.stringify(commit)}, upstream: ${JSON.stringify(UPSTREAM)} };\n`;
+}
+export function verifyStaged(project, destination, commit) {
+    const source = join(project, "src"), canonical = inventory(source);
+    const m = JSON.parse(readFileSync(join(destination, ".presence-guard-stage.json"), "utf8"));
+    const expected = { ...canonical, "buildInfo.ts": hash(buildInfo(source, commit)) };
+    const actual = inventory(destination); delete actual[".presence-guard-stage.json"];
+    if (m.version !== 1 || m.commit !== commit || m.upstream !== UPSTREAM || m.sourceHash !== hash(JSON.stringify(canonical)) || JSON.stringify(m.files) !== JSON.stringify(expected) || JSON.stringify(actual) !== JSON.stringify(expected)) throw Error("staging_not_canonical_reviewed_source");
+    return m;
+}
 export function stage(project, vencord, dryRun = false) {
     const destination = join(resolve(vencord), "src/userplugins/presenceGuard");
     const commit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -36,8 +48,7 @@ export function stage(project, vencord, dryRun = false) {
     if (existsSync(destination)) rmSync(destination, { recursive: true }); // Exact, verified, generated tree only.
     mkdirSync(destination, { recursive: true });
     cpSync(source, destination, { recursive: true, errorOnExist: true });
-    const header = readFileSync(join(source, "buildInfo.ts"), "utf8").split("export const")[0];
-    writeFileSync(join(destination, "buildInfo.ts"), `${header}export const BUILD_INFO = { commit: ${JSON.stringify(commit)}, upstream: ${JSON.stringify(UPSTREAM)} };\n`);
+    writeFileSync(join(destination, "buildInfo.ts"), buildInfo(source, commit));
     const staged = inventory(destination);
     const manifest = { version: 1, commit, upstream: UPSTREAM, sourceHash, files: staged };
     writeFileSync(join(destination, ".presence-guard-stage.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });

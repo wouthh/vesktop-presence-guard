@@ -54,3 +54,14 @@ test("hot re-enable blocks fresh PipeWire acquisition when local camera continui
     const signal = cameraSnapshot(active, UNKNOWN("local"), 100, false);
     assert.equal(signal.value, "unknown"); assert.equal(signal.reason, "renderer_restart_required_for_webcam_rule");
 });
+
+test("a lock before or simultaneous with blanking stays ambiguous even above the idle threshold", () => {
+    for (const power of [0, 3]) {
+        const d = new DisplayDetector(); d.observe(display({ idleMs: 301000 }));
+        assert.equal(d.observe(display({ at: 2000, idleMs: 302000, locked: true, power })).value, "unknown");
+        assert.equal(d.observe(display({ at: 3000, idleMs: 303000, locked: true, power: 3 })).value, "unknown");
+    }
+    const d = new DisplayDetector(); d.observe(display({ idleMs: 299000 }));
+    assert.equal(d.observe(display({ at: 3000, idleMs: 301000, power: 3 })).value, "inactive");
+    assert.equal(d.observe(display({ at: 4000, idleMs: 302000, power: 3, locked: true })).value, "inactive");
+});

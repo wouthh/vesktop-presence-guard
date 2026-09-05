@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
-import { stage } from "../scripts/staging.mjs";
+import { stage, verifyStaged, hash } from "../scripts/staging.mjs";
 // @ts-expect-error Installation JavaScript is linted and exercised directly.
 import { restoreMain, pinBaseline, verifyWiring } from "../scripts/install.mjs";
 import { leaseActive, startIdentity } from "../helper/lifetime";
@@ -17,7 +17,13 @@ test("actual staging dry run, repeat install and drift rejection preserve other 
     writeFileSync(join(project, "src/buildInfo.ts"), "export const BUILD_INFO = {};\n"); writeFileSync(join(vc, "src/userplugins/existing/private.txt"), "synthetic unrelated plugin");
     execFileSync("git", ["init", "-q", project]); execFileSync("git", ["-C", project, "add", "."]); execFileSync("git", ["-C", project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
     const dry = stage(project, vc, true); assert.equal(dry.files, 1); assert.throws(() => readFileSync(join(dry.destination, "buildInfo.ts")));
-    const a = stage(project, vc), b = stage(project, vc); assert.deepEqual(a, b); assert.equal(readFileSync(join(vc, "src/userplugins/existing/private.txt"), "utf8"), "synthetic unrelated plugin");
+    const a = stage(project, vc), b = stage(project, vc); assert.deepEqual(a, b);
+    verifyStaged(project, a.destination, a.commit);
+    const manifestPath = join(a.destination, ".presence-guard-stage.json"), manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const original = readFileSync(join(a.destination, "buildInfo.ts"), "utf8");
+    writeFileSync(join(a.destination, "buildInfo.ts"), "tampered"); manifest.files["buildInfo.ts"] = hash("tampered"); writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(() => verifyStaged(project, a.destination, a.commit), /not_canonical/);
+    writeFileSync(join(a.destination, "buildInfo.ts"), original); manifest.files["buildInfo.ts"] = hash(original); writeFileSync(manifestPath, JSON.stringify(manifest)); assert.equal(readFileSync(join(vc, "src/userplugins/existing/private.txt"), "utf8"), "synthetic unrelated plugin");
     writeFileSync(join(a.destination, "unexpected.txt"), "do not overwrite"); assert.throws(() => stage(project, vc), /drift/); assert.equal(readFileSync(join(a.destination, "unexpected.txt"), "utf8"), "do not overwrite");
 });
 test("rollback settings only restore the owned entry and are repeatable", () => {
@@ -30,7 +36,10 @@ test("baseline pinning and wiring validation reject changed files", t => {
     const dist = join(root, ".wout-releases/original/dist"), ledger = join(root, "ledger"); mkdirSync(dist, { recursive: true }); mkdirSync(join(ledger, "backups"), { recursive: true }); writeFileSync(join(dist, "bundle.js"), "synthetic bundle"); symlinkSync(dist, join(root, "dist"));
     const c = { vencordRoot: root, ledger, mainLauncher: join(root, "launcher"), updater: join(root, "updater") };
     for (const [path, backup] of [[c.mainLauncher, "main-launcher"], [c.updater, "updater"]]) { writeFileSync(path, "fixture"); writeFileSync(join(ledger, "backups", backup), "fixture"); }
+    writeFileSync(join(ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
     assert.deepEqual(pinBaseline(c), pinBaseline(c)); verifyWiring(c); writeFileSync(c.mainLauncher, "changed"); assert.throws(() => verifyWiring(c), /drift/);
+    writeFileSync(join(ledger, "backups/updater"), "changed backup"); assert.throws(() => pinBaseline(c), /backup_drift/);
+    writeFileSync(join(ledger, "backups/updater"), "fixture");
     writeFileSync(join(dist, "bundle.js"), "changed"); assert.throws(() => pinBaseline(c), /drift/);
 });
 test("helper lease expires, rejects future/malformed data, and identity handles spaced process names", () => {

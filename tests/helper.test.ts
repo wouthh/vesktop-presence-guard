@@ -9,6 +9,7 @@ test("production helper enters its loop before quitting for an already-exited pa
     const callbacks: (() => void)[] = []; let running = false; let writes = 0; let removed = false;
     const glib = {
         MainLoop: class { run() { running = true; for (const fn of callbacks.splice(0)) fn(); if (running) throw Error("loop_did_not_terminate"); } quit() { running = false; } },
+        uuid_string_random: () => "synthetic-instance",
         PRIORITY_DEFAULT: 0, SOURCE_REMOVE: false, SOURCE_CONTINUE: true,
         idle_add: (_: unknown, fn: () => void) => { callbacks.push(fn); }, timeout_add_seconds: () => 1, source_remove: () => { removed = true; },
         file_get_contents: () => { throw Error("parent_exited"); }

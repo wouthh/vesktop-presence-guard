@@ -29,6 +29,7 @@ const session = Gio.DBus.session;
 const system = Gio.DBus.system;
 const settings = new Gio.Settings({ schema_id: "org.gnome.desktop.session" });
 let suspended = false;
+const instance = GLib.uuid_string_random();
 let provider = 0;
 let lastLease = false;
 let busy = false;
@@ -65,7 +66,7 @@ async function observe() {
         if (!Array.isArray(logical)) throw Error();
         // Do not persist monitor names/serials. Geometry and connector count suffice for continuity.
         const shape = logical.map((m: any[]) => [m[0], m[1], m[2], m[3], m[5]?.length]);
-        const observation = { at, power: power[0].deepUnpack(), idleMs: Number(idle[0]), thresholdMs: settings.get_uint("idle-delay") * 1000, locked: locked[0], suspended, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${provider}` };
+        const observation = { at, power: power[0].deepUnpack(), idleMs: Number(idle[0]), thresholdMs: settings.get_uint("idle-delay") * 1000, locked: locked[0], suspended, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
         if (lastLease && identity()) write({ version: 1, at, observation });
     } catch { provider++; write({ version: 1, at, observation: null, reason: "gnome_provider_unavailable" }); }
     finally { busy = false; }

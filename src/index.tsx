@@ -15,7 +15,7 @@ import { BUILD_INFO } from "./buildInfo";
 import { cameraSnapshot, PipeWireDetector } from "./core/camera";
 import { DisplayDetector } from "./core/display";
 import { PresenceEngine } from "./core/engine";
-import { retain } from "./core/history";
+import { mergeHistory, retain } from "./core/history";
 import { statusMutator } from "./core/mutator";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
@@ -125,7 +125,7 @@ async function poll() {
     finally { polling = false; }
 }
 function mode() {
-    if (!settings.store.idle && !settings.store.camera) return "Observation only";
+    if (!settings.store.idle && !settings.store.camera) return settings.store.observe ? "Observation only" : "Observation only (history off)";
     if (!statusHooks) return "Automation unavailable";
     if (engine?.pausedRules.length) return "Automation paused";
     if (engine?.ownership) return "Plugin-owned status";
@@ -144,6 +144,7 @@ function Panel() {
         <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Safety hooks: {patchError}.</Forms.FormText>
         <Forms.FormText>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Forms.FormText>
         <Forms.FormText>Camera: {s.camera.value} — {s.camera.reason}. {s.camera.scope}. Last sample: {s.camera.at ? new Date(s.camera.at).toLocaleTimeString() : "none"}.</Forms.FormText>
+        <Forms.FormText>PipeWire: {pwCamera.value} — {pwCamera.reason}. Vesktop: {localCamera.value} — {localCamera.reason}.</Forms.FormText>
         <Forms.FormText>Local presence is not independent proof of what other sessions or users see. Simulations never change status.</Forms.FormText>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "12px 0" }}>
             <Button onClick={() => { settings.store.idle = !settings.store.idle; configure(); }}>Automatic Idle: {settings.store.idle ? "On" : "Off"}</Button>
@@ -154,7 +155,7 @@ function Panel() {
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>
-        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}</Forms.FormText></li>)}</ol>
+        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}</Forms.FormText><Forms.FormText>Display {e.display.value}: {e.display.reason} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
     </div>;
 }
 function openPanel() { openModal(props => <Modal {...props} title="PresenceGuard"><Panel /></Modal>); }
@@ -197,7 +198,7 @@ export default definePlugin({
         for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; engine?.boundary(event.toLowerCase()); provenance.clear(); });
         for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; engine?.boundary("connection_open_new_epoch"); queueMicrotask(() => engine?.sample()); });
         const epoch = lifecycle;
-        void Native.readHistory().then(history => { if (epoch === lifecycle) { events = retain([...history, ...events], Date.now()).filter((e, i, all) => all.findIndex(x => x.at === e.at && x.kind === e.kind && x.reason === e.reason) === i); notify(); } }).catch(() => { patchError = "history_unavailable_preserved"; });
+        void Native.readHistory().then(history => { if (epoch === lifecycle) { events = mergeHistory(history, events, Date.now()); notify(); } }).catch(() => { patchError = "history_unavailable_preserved"; });
         void Native.consumeWelcome().then(show => { if (show && epoch === lifecycle) openPanel(); });
         engine.sample(); interval = setInterval(() => void poll(), 2000); void poll();
     },
