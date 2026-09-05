@@ -12,13 +12,14 @@ import { findByCode, findByProps, findModuleId, findStoreLazy, wreq } from "@web
 import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, UserStore, useState } from "@webpack/common";
 
 import { BUILD_INFO } from "./buildInfo";
-import { combineCamera, PipeWireDetector } from "./core/camera";
+import { cameraSnapshot, PipeWireDetector } from "./core/camera";
 import { DisplayDetector } from "./core/display";
 import { PresenceEngine } from "./core/engine";
 import { retain } from "./core/history";
 import { statusMutator } from "./core/mutator";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
+import { CameraTracks } from "./core/tracks";
 import { HistoryEvent, Options, Snapshot, status, UNKNOWN, WriteToken } from "./core/types";
 import { actionPatch, cameraPatch, protoPatch, selectionPatch } from "./patches";
 
@@ -32,8 +33,7 @@ const Voice = findStoreLazy("RTCConnectionStore");
 const provenance = new Provenance();
 const displayDetector = new DisplayDetector();
 const pipewireDetector = new PipeWireDetector();
-const tracks = new Set<MediaStreamTrack>();
-const trackListeners = new Map<MediaStreamTrack, () => void>();
+const tracks = new CameraTracks(() => { void poll(); });
 const subscriptions: [string, (event: any) => void][] = [];
 let engine: PresenceEngine | undefined;
 let interval: ReturnType<typeof setInterval> | undefined;
@@ -65,7 +65,7 @@ function options(): Options { return { observe: settings.store.observe, idle: se
 function read(): Snapshot {
     try {
         const account = UserStore.getCurrentUser()?.id ?? null;
-        return { account, connected: connectionFresh && Gateway.isConnected() && Gateway.getSocket()?.connectionState === connectionStates?.SESSION_ESTABLISHED, capable: statusHooks, configured: status(Configured.getSetting()), effective: status(SelfPresence.getStatus()), aggregate: account ? status(AggregatePresence.getStatus(account, null, "unknown")) : "unknown", nativeIdle: typeof Idle.isIdle() === "boolean" ? Idle.isIdle() : null, display, camera: combineCamera(pwCamera, localCamera, Date.now()) };
+        return { account, connected: connectionFresh && Gateway.isConnected() && Gateway.getSocket()?.connectionState === connectionStates?.SESSION_ESTABLISHED, capable: statusHooks, configured: status(Configured.getSetting()), effective: status(SelfPresence.getStatus()), aggregate: account ? status(AggregatePresence.getStatus(account, null, "unknown")) : "unknown", nativeIdle: typeof Idle.isIdle() === "boolean" ? Idle.isIdle() : null, display, camera: cameraSnapshot(pwCamera, localCamera, Date.now(), cameraContinuity) };
     } catch { return { account: null, connected: false, capable: false, configured: "unknown", effective: "unknown", aggregate: "unknown", nativeIdle: null, display, camera: UNKNOWN("Partial", "client_stores_unavailable") }; }
 }
 function record(event: HistoryEvent) {
@@ -115,8 +115,8 @@ async function poll() {
         if (epoch !== lifecycle || !engine?.running) return;
         display = displayDetector.observe(d);
         pwCamera = camera === null ? UNKNOWN("PipeWire", "pipewire_unavailable", Date.now()) : pipewireDetector.parse(camera, Date.now());
-        for (const track of tracks) if (track.readyState === "ended") tracks.delete(track);
-        localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: [...tracks].some(t => t.readyState === "live" && !t.muted) ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_or_muted" : "no_observed_live_camera_track" };
+        tracks.prune();
+        localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: tracks.live ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_muted_or_disabled" : "no_observed_live_camera_track" };
         engine.sample();
         const s = read();
         await Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine.latestDecision, mode: mode(), displayReason: display.reason, cameraReason: s.camera.reason, statusHooks, cameraHook, panelMounted, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError });
@@ -179,19 +179,18 @@ export default definePlugin({
         if (!constraints?.video || constraints.video?.mandatory?.chromeMediaSource || constraints.video?.mediaSource) return;
         for (const track of stream.getVideoTracks()) {
             if ((track.getSettings() as any).displaySurface) continue;
-            if (tracks.has(track)) continue;
             tracks.add(track);
-            const ended = () => { tracks.delete(track); trackListeners.delete(track); void poll(); };
-            trackListeners.set(track, ended);
-            track.addEventListener("ended", ended, { once: true });
         }
         void poll();
     },
     start() {
         lifecycle++;
+        display = UNKNOWN("GNOME"); pwCamera = UNKNOWN("PipeWire"); localCamera = UNKNOWN("Vesktop");
+        displayDetector.reset(); pipewireDetector.reset();
         validateHooks();
         try { connectionFresh = Gateway.isConnected() && !!UserStore.getCurrentUser() && UserSettingsProtoStore.hasLoaded(1); } catch { connectionFresh = false; }
         engine = new PresenceEngine({ read, write, record }, { now: Date.now, set: (fn, ms) => setTimeout(fn, ms), clear: id => clearTimeout(id as ReturnType<typeof setTimeout>) }, options());
+        engine.boundary("plugin_start_new_detector_epoch");
         subscribe("USER_SETTINGS_PROTO_UPDATE", statusUpdate);
         subscribe("PRESENCE_UPDATE", event => { if ((event.user?.id ?? event.userId) === UserStore.getCurrentUser()?.id) queueMicrotask(() => engine?.sample()); });
         for (const event of ["IDLE", "AFK", "SESSIONS_REPLACE"]) subscribe(event, () => queueMicrotask(() => engine?.sample(event === "IDLE" ? "native/client" : "unknown")));
@@ -208,8 +207,8 @@ export default definePlugin({
         clearInterval(interval); interval = undefined;
         displayDetector.reset(); pipewireDetector.reset();
         cameraContinuity = false;
-        for (const [track, fn] of trackListeners) track.removeEventListener("ended", fn);
-        trackListeners.clear(); tracks.clear();
+        tracks.clear();
+        display = UNKNOWN("GNOME"); pwCamera = UNKNOWN("PipeWire"); localCamera = UNKNOWN("Vesktop");
         void Native.lease(false);
         void Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped" });
     }

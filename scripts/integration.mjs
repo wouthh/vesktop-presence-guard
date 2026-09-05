@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { stage, UPSTREAM } from "./staging.mjs";
+import { verifyUpstream } from "./verify-upstream.mjs";
 const root = resolve(process.env.PRESENCE_GUARD_TEST_VENCORD ?? ".cache/Vencord");
 function run(cmd, args) { const p = spawnSync(cmd, args, { cwd: root, stdio: "inherit" }); if (p.status !== 0) process.exit(p.status ?? 1); }
 if (!existsSync(root)) {
@@ -10,8 +11,7 @@ if (!existsSync(root)) {
     execFileSync("git", ["clone", "--no-checkout", "https://github.com/Vendicated/Vencord.git", root], { stdio: "inherit" });
     run("git", ["checkout", "--detach", UPSTREAM]);
 }
-const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-if (head !== UPSTREAM) throw Error("integration_upstream_revision_mismatch");
+verifyUpstream(root, UPSTREAM);
 stage(process.cwd(), root);
 if (!existsSync(resolve(root, "node_modules"))) run("pnpm", ["install", "--frozen-lockfile", "--ignore-scripts"]);
 run("pnpm", ["testTsc"]);

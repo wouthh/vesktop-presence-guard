@@ -38,6 +38,9 @@ and rejects changed or unowned staging trees. `prepare` stages under the updater
 lock, then asks the updater to build an isolated candidate without activation.
 The canonical project gate and the full combined Vencord checks must pass first.
 Commit all source changes before installation; dirty or mismatched heads fail.
+Installation compiles the helper directly from that clean source and records its
+hash; ignored build artifacts are never installed as trusted input. Launcher and
+helper configuration are checked before candidate activation.
 
 Immediately before restart, verify **neither profile has a call or capture**.
 If reliable client inspection is unavailable, obtain an explicit no-call/capture

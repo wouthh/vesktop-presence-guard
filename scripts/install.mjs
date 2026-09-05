@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hash, inventory, stage } from "./staging.mjs";
+import { compileHelper } from "./helper-build.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = path => JSON.parse(readFileSync(path, "utf8"));
@@ -79,28 +80,34 @@ export function pinBaseline(c) {
     if (JSON.stringify(inventory(baseline.dist)) !== JSON.stringify(baseline.files)) throw Error("baseline_build_drift");
     return baseline;
 }
-function setupHelper(c) {
+export function planHelper(c) {
     const root = join(c.vencordRoot, ".presence-guard"), native = join(c.mainProfile, "PresenceGuard");
-    mkdirSync(root, { recursive: true, mode: 0o700 }); mkdirSync(native, { recursive: true, mode: 0o700 });
-    const helper = readFileSync(join(project, "dist/display-helper.mjs"));
-    atomic(join(root, "display-helper.mjs"), helper);
+    for (const path of [root, native]) if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isDirectory())) throw Error("helper_directory_drift");
     const configPath = join(native, "installation.json");
-    if (!existsSync(configPath)) atomic(configPath, JSON.stringify({ version: 1, snapshot: join(root, "display.json"), welcome: true }));
-    else if (read(configPath).snapshot !== join(root, "display.json")) throw Error("helper_configuration_drift");
+    if (existsSync(configPath) && (lstatSync(configPath).isSymbolicLink() || read(configPath).snapshot !== join(root, "display.json") || read(configPath).version !== 1)) throw Error("helper_configuration_drift");
+    const helperPath = join(root, "display-helper.mjs"), receipt = join(c.ledger, "installed.json");
+    if (existsSync(helperPath) && (lstatSync(helperPath).isSymbolicLink() || !existsSync(receipt) || hash(readFileSync(helperPath)) !== read(receipt).helperHash)) throw Error("installed_helper_drift");
     const launcher = readFileSync(c.mainLauncher, "utf8");
     const marker = "# PresenceGuard process-bound observer";
     const installed = join(c.ledger, "installed-launcher.sha256");
     if (launcher.includes(marker)) {
         if (!existsSync(installed) || readFileSync(installed, "utf8").trim() !== hash(launcher)) throw Error("launcher_drift");
-        return;
+        return { root, native, configPath, launcher };
     }
     const lines = launcher.trimEnd().split("\n");
     if (!lines.at(-1).startsWith("exec ") || !lines.at(-1).includes("mullvad-exclude") || !lines.at(-1).includes("flatpak run")) throw Error("unsupported_launcher_shape_preserved");
     const launch = lines.pop();
     const injection = `${marker}\npg_start=$(awk '{print $22}' /proc/$$/stat)\n/usr/bin/gjs -m ${shellQuote(join(root, "display-helper.mjs"))} "$$" "$pg_start" ${shellQuote(join(root, "display.json"))} ${shellQuote(join(native, "lease.json"))} >> ${shellQuote(join(native, "helper.log"))} 2>&1 &\n`;
     const next = `${lines.join("\n")}\n${injection}${launch}\n`;
-    atomic(c.mainLauncher, next, 0o755);
-    atomic(installed, `${hash(next)}\n`);
+    return { root, native, configPath, launcher: next };
+}
+function setupHelper(c, plan, helper) {
+    const { root, native, configPath, launcher } = plan;
+    mkdirSync(root, { recursive: true, mode: 0o700 }); mkdirSync(native, { recursive: true, mode: 0o700 });
+    atomic(join(root, "display-helper.mjs"), helper);
+    if (!existsSync(configPath)) atomic(configPath, JSON.stringify({ version: 1, snapshot: join(root, "display.json"), welcome: true }));
+    atomic(c.mainLauncher, launcher, 0o755);
+    atomic(join(c.ledger, "installed-launcher.sha256"), `${hash(launcher)}\n`);
 }
 export async function main(args) {
     const action = args[0], path = args[args.indexOf("--config") + 1];
@@ -116,13 +123,18 @@ export async function main(args) {
     }
     if (action === "pin" && locked) { verifyWiring(c); pinBaseline(c); return; }
     if (!["install", "update", "rollback", "uninstall"].includes(action)) throw Error("unknown_install_action");
-    if (dry) return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper launcher", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
+    if (dry) {
+        if (action === "install" || action === "update") planHelper(c);
+        return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper launcher", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
+    }
     if (processes().length) throw Error("vesktop_running_close_identified_profiles_gracefully_after_call_capture_preflight");
     const settingsPath = join(c.mainProfile, "settings/settings.json");
     if (action === "install" || action === "update") {
         const manifest = verifyCandidate(c);
         // The maintained updater owns its own lock, candidate checks, backups and atomic activation.
         verifyWiring(c);
+        const plan = planHelper(c);
+        const helper = compileHelper(project);
         if (!locked) {
             underLock(["pin", "--config", path]);
             execFileSync(c.updater, ["activate"], { stdio: "inherit" }); return underLock();
@@ -132,9 +144,9 @@ export async function main(args) {
             const text = readFileSync(join(active, file), "utf8");
             if (!text.includes("PresenceGuard") || (file.includes("Renderer") && !text.includes(manifest.commit))) throw Error("active_build_identity_mismatch");
         }
-        setupHelper(c);
+        setupHelper(c, plan, helper);
         atomic(settingsPath, JSON.stringify(enableMain(read(settingsPath))));
-        const receipt = { commit: manifest.commit, installedAt: new Date().toISOString(), dist: active, rendererHash: hash(readFileSync(join(active, "vencordDesktopRenderer.js"))), mainHash: hash(readFileSync(join(active, "vencordDesktopMain.js"))) };
+        const receipt = { commit: manifest.commit, helperHash: hash(helper), installedAt: new Date().toISOString(), dist: active, rendererHash: hash(readFileSync(join(active, "vencordDesktopRenderer.js"))), mainHash: hash(readFileSync(join(active, "vencordDesktopMain.js"))) };
         atomic(join(c.ledger, "installed.json"), JSON.stringify(receipt, null, 2));
         console.log(JSON.stringify(receipt, null, 2));
         return;

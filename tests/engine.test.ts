@@ -121,3 +121,8 @@ test("a rejected write pauses without retrying or retaining ownership", async ()
 test("shutdown cancels pending work before issuing it", async () => {
     const f = fixture(); f.signal("inactive"); f.engine.stop(); await f.advance(); assert.deepEqual(f.writes, []);
 });
+test("new start epoch rejects fresh-looking detector values retained by an adapter", async () => {
+    const f = fixture(); f.s.display.value = "inactive"; f.s.camera.value = "active";
+    f.engine.boundary("plugin_start_new_detector_epoch"); f.engine.sample(); await f.advance(); assert.deepEqual(f.writes, []);
+    f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, []);
+});

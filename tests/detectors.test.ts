@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PipeWireDetector, combineCamera } from "../src/core/camera";
+import { PipeWireDetector, combineCamera, cameraSnapshot } from "../src/core/camera";
 import { DisplayDetector, type DisplayObservation } from "../src/core/display";
 import { UNKNOWN } from "../src/core/types";
 const display = (extra: Partial<DisplayObservation> = {}): DisplayObservation => ({ at: 1000, power: 0, idleMs: 0, thresholdMs: 300000, locked: false, suspended: false, topology: "synthetic-topology", monitors: 2, provider: "synthetic-provider", ...extra });
@@ -47,4 +47,10 @@ test("PipeWire restart cannot clear capture by reusing node IDs", () => {
 test("missing display lock/suspend fields cannot prove return", () => {
     const sample = display(); delete (sample as Partial<DisplayObservation>).locked;
     assert.equal(new DisplayDetector().observe(sample).value, "unknown");
+});
+
+test("hot re-enable blocks fresh PipeWire acquisition when local camera continuity was lost", () => {
+    const active = { value: "active" as const, at: 100, scope: "fixture", reason: "capture" };
+    const signal = cameraSnapshot(active, UNKNOWN("local"), 100, false);
+    assert.equal(signal.value, "unknown"); assert.equal(signal.reason, "renderer_restart_required_for_webcam_rule");
 });

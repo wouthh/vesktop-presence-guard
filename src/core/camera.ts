@@ -58,3 +58,7 @@ export function combineCamera(pipewire: Signal, local: Signal, now: number): Sig
     if ([pipewire, local].some(s => !fresh(s, now))) return UNKNOWN(scope, "camera_provider_unknown", now);
     return { value: "inactive", at: Math.min(pipewire.at, local.at), scope, reason: "capture_clear_in_observed_scopes" };
 }
+
+export function cameraSnapshot(pipewire: Signal, local: Signal, now: number, continuous: boolean): Signal {
+    return continuous ? combineCamera(pipewire, local, now) : UNKNOWN("Partial", "renderer_restart_required_for_webcam_rule", now);
+}

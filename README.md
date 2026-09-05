@@ -52,7 +52,9 @@ proof of ownership.
 
 Disabling an owning rule, stopping the plugin, switching accounts or reconnecting
 revokes ownership and leaves status unchanged. Ownership never survives a
-restart. Unexplained reversals pause the affected rule instead of repeatedly
+restart. Re-enabling the plugin in the same renderer leaves webcam automation
+unavailable until a renderer restart, because acquisitions while disabled cannot
+be reconstructed safely; Idle and observation remain available. Unexplained reversals pause the affected rule instead of repeatedly
 fighting the client. Resume explicitly in the panel or select Online manually.
 `CustomIdle` and `AutoDNDWhilePlaying` are detected conflicts; resolve them yourself
 before using automation. PresenceGuard never disables other plugins.
