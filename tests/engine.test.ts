@@ -182,3 +182,12 @@ for (const rule of ["idle", "camera"] as const) test(`unattributed intervention 
     assert.deepEqual(f.writes, []); assert.deepEqual(f.engine.pausedRules, [rule]);
     f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, [rule === "idle" ? "idle" : "dnd"]);
 });
+
+test("an unresolved manual choice stays protected across same-account reconnects", async () => {
+    const f = fixture(); f.engine.sample(); f.engine.manual("dnd");
+    f.s.connected = false; f.engine.boundary("connection_closed"); f.engine.sample(); await f.advance();
+    f.s.connected = true; f.engine.boundary("connection_open_new_epoch"); await f.advance();
+    f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);
+    f.s.account = "different-synthetic-account"; f.engine.sample(); await f.advance();
+    f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
+});

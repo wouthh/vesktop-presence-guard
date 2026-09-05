@@ -44,7 +44,6 @@ export class PresenceEngine {
 
     boundary(reason: string) {
         this.invalidate();
-        this.manualPending = null;
         this.detectorEpoch = this.clock.now();
         this.emit("boundary", reason, "unknown", this.adapter.read());
     }
@@ -99,7 +98,10 @@ export class PresenceEngine {
     sample(source: Source = "unknown", token?: WriteToken) {
         if (this.stopped) return;
         const s = this.adapter.read();
-        if (this.previous && s.account !== this.previous.account) this.boundary("account_changed");
+        if (this.previous && s.account !== this.previous.account) {
+            this.manualPending = null;
+            this.boundary("account_changed");
+        }
         // The picker runs before Discord asynchronously loads and applies settings.
         // A non-Online selection blocks acquisition while the old preference is Online.
         if (this.manualPending !== "unknown" && s.configured === this.manualPending) this.manualPending = null;
