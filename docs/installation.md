@@ -9,8 +9,9 @@ as unavailable; do not broaden sandbox permissions as a shortcut.
 
 The installer deliberately consumes an **owner-only, external JSON descriptor**.
 Keep this local. Required absolute-path fields are `vencordRoot`, `mainProfile`,
-`altProfile`, `mainLauncher`, `updater`, `updaterLock`, and `ledger`. The two
-profiles must differ and main `state.json` must already reference the maintained
+`altProfile`, `mainLauncher`, `updater`, `updaterLock`, and `ledger`.
+Installation also requires `updaterPending`, the absolute path to the maintained
+updater's private `pending.json`. The two profiles must differ and main `state.json` must already reference the maintained
 `dist` location. The supported main launcher ends in its existing `exec`
 Mullvad-excluded Flatpak invocation; unexpected launchers are rejected intact.
 
@@ -68,7 +69,8 @@ the updater inherits that lock and the verified executable descriptor.
 It builds an isolated candidate without activation.
 The canonical project gate and the full combined Vencord checks must pass first.
 Commit all source changes before installation; dirty or mismatched heads fail.
-Installation compiles the helper directly from that clean source and records its
+Installation compiles the helper from Git blobs of the recorded commit in an
+isolated snapshot, rejects compiler inputs outside that snapshot, and records its
 hash; ignored build artifacts are never installed as trusted input. Launcher and
 helper configuration and the installation receipt target are checked before
 candidate activation. Unexpected directories, symlinks and read-only receipt
@@ -144,3 +146,35 @@ procedure. The recorded rollback, original build and retained helper/configurati
 are verified before reusing them. First-install defaults and the welcome panel are
 restored, and the rollback marker is cleared only after installation succeeds. Do not
 restore whole profile backups over newer authentication or unrelated settings.
+
+## Interrupted integration
+
+Before activation or rollback, the installer durably prepares the exact target
+files and records an `integration-transaction.json` in the private ledger.
+Both profiles must remain closed. Repeating the interrupted command verifies the
+recorded releases, prepared file images, and every current target against its
+before/after states, then finishes the recorded operation. Unexpected edits stop
+recovery. A recovered older installation is reported explicitly; prepare the
+current head and update again afterward. A recovered rollback requires reapplying
+the reviewed updater before a new installation.
+
+`rollback` can cancel an installation that never activated. If activation already
+occurred, it finishes the known prepared file changes before restoring the pinned
+baseline. This operates only while the clients are closed. Local history and
+unrelated settings remain preserved. `inspect` and dry runs report pending
+recovery without performing it. Staging/prepare refuse to replace sources while
+integration recovery is pending. An interrupted cleanup can leave hidden prepared
+images for inspection; do not delete unexplained files or edit the journal to
+bypass validation.
+
+The integration check and installation staging also share a per-checkout lock
+beside the Vencord directory (`.presence-guard-stage.lock` suffix). The integration
+check holds it through validation/build; installation keeps its maintained-updater
+lock as well. This prevents competing checks from recovering a live transaction.
+
+GNOME's `ScreenSaver.GetActive` exposes screen-shield activity, not an authentication
+lock. The helper reads `login1.Session.LockedHint` separately and validates that
+logind's automatic session lookup selects the current user's active Wayland user
+session. Provider/session changes invalidate continuity. See the upstream
+[screen-shield D-Bus adapter](https://raw.githubusercontent.com/GNOME/gnome-shell/50.4/js/ui/shellDBus.js)
+and [lock-hint implementation](https://raw.githubusercontent.com/GNOME/gnome-shell/50.4/js/ui/screenShield.js).

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFileSync } from "node:child_process";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
+import { hash, inventory, verifyStaged } from "./staging.mjs";
 import { regularBytes, descriptorBytes } from "./regular-file.mjs";
+import { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
+import { lockedStage } from "./locked-stage.mjs";
+import { finishIntegration, pendingIntegration, prepareIntegration } from "./integration-transaction.mjs";
 import { compileHelper } from "./helper-build.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,7 +41,8 @@ export function descriptor(path) {
 export function inspect(c) {
     const settings = read(join(c.mainProfile, "settings/settings.json"));
     const marker = join(c.vencordRoot, "src/userplugins/presenceGuard/.presence-guard-stage.json");
-    return { running: processes(), activeBuild: realpathSync(join(c.vencordRoot, "dist")), plugin: settings.plugins?.PresenceGuard ?? null, stagedCommit: existsSync(marker) ? read(marker).commit : null, existingSources: readdirSync(join(c.vencordRoot, "src/userplugins")).sort() };
+    const pending = pendingIntegration(c);
+    return { integrationRecovery: pending ? { kind: pending.kind, commit: pending.commit } : null, running: processes(), activeBuild: realpathSync(join(c.vencordRoot, "dist")), plugin: settings.plugins?.PresenceGuard ?? null, stagedCommit: existsSync(marker) ? read(marker).commit : null, existingSources: readdirSync(join(c.vencordRoot, "src/userplugins")).sort() };
 }
 function verifyCandidate(c) {
     const root = join(c.vencordRoot, "src/userplugins/presenceGuard");
@@ -76,18 +80,7 @@ export function verifyWiring(c) {
     for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o777) !== mode) throw Error(`${key}_mode_drift`);
     return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
 }
-export function updaterLockDescriptor(path) {
-    const target = lstatSync(path);
-    if (!target.isFile() || target.isSymbolicLink()) return undefined;
-    return readdirSync("/proc/self/fdinfo").find(fd => {
-        try {
-            const stat = fstatSync(Number(fd));
-            if (stat.dev !== target.dev || stat.ino !== target.ino) return false;
-            return new RegExp(`^lock:\\s+\\d+: FLOCK\\s+ADVISORY\\s+WRITE\\s+${process.pid}\\s`, "m").test(readFileSync(`/proc/self/fdinfo/${fd}`, "utf8"));
-        } catch { return false; /* Descriptor closed during inspection. */ }
-    });
-}
-export const holdsUpdaterLock = path => updaterLockDescriptor(path) !== undefined;
+export { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
 export function runUpdater(c, action, execute = execFileSync) {
     if (!["rebuild", "activate"].includes(action)) throw Error("unsupported_updater_action");
     const lock = updaterLockDescriptor(c.updaterLock);
@@ -214,13 +207,24 @@ export function planHelper(c) {
     const next = `${lines.join("\n")}\n${injection}${launch}\n`;
     return { root, native, configPath, launcher: next };
 }
-function setupHelper(c, plan, helper, launcherMode) {
-    const { root, native, configPath, launcher } = plan;
-    mkdirSync(root, { recursive: true, mode: 0o700 }); mkdirSync(native, { recursive: true, mode: 0o700 });
-    atomic(join(root, "display-helper.mjs"), helper);
-    if (!existsSync(configPath) || existsSync(join(c.ledger, "rolled-back.json"))) atomic(configPath, JSON.stringify({ version: 1, snapshot: join(root, "display.json"), welcome: true }));
-    atomic(c.mainLauncher, launcher, launcherMode);
-    atomic(join(c.ledger, "installed-launcher.sha256"), `${hash(launcher)}\n`);
+export function candidateDist(c, commit) {
+    if (typeof c.updaterPending !== "string" || !isAbsolute(c.updaterPending)) throw Error("updaterPending_required_for_installation");
+    let dist;
+    if (statOrNull(c.updaterPending)) dist = join(read(c.updaterPending).release, "dist");
+    else {
+        const receipt = statOrNull(join(c.ledger, "installed.json")) && read(join(c.ledger, "installed.json"));
+        if (!receipt || receipt.commit !== commit || realpathSync(join(c.vencordRoot, "dist")) !== receipt.dist) throw Error("validated_pending_candidate_required");
+        dist = receipt.dist;
+    }
+    const root = realpathSync(join(c.vencordRoot, ".wout-releases"));
+    if (dirname(dirname(dist)) !== root || realpathSync(dist) !== dist) throw Error("candidate_not_retained_release");
+    const manifest = read(join(dirname(dist), "manifest.json")), actual = inventory(dist);
+    if (!manifest.bundle_hashes || Object.keys(actual).length !== Object.keys(manifest.bundle_hashes).length || Object.entries(actual).some(([key, value]) => manifest.bundle_hashes[key] !== value)) throw Error("candidate_bundle_hash_mismatch");
+    for (const file of ["vencordDesktopMain.js", "vencordDesktopRenderer.js"]) {
+        const text = regularBytes(join(dist, file), "utf8");
+        if (!text.includes("PresenceGuard") || (file.includes("Renderer") && !text.includes(commit))) throw Error("candidate_build_identity_mismatch");
+    }
+    return dist;
 }
 export async function main(args) {
     const action = args[0], path = args[args.indexOf("--config") + 1];
@@ -230,23 +234,36 @@ export async function main(args) {
     if (locked && !holdsUpdaterLock(c.updaterLock)) throw Error("updater_lock_not_held");
     const underLock = (childArgs = args) => { mkdirSync(dirname(c.updaterLock), { recursive: true, mode: 0o700 }); return execFileSync("/usr/bin/flock", ["--no-fork", "-n", c.updaterLock, process.execPath, fileURLToPath(import.meta.url), ...childArgs, "--locked"], { stdio: "inherit" }); };
     if (action === "inspect") return console.log(JSON.stringify(inspect(c), null, 2));
-    if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(stage(project, c.vencordRoot, dry), null, 2)); }
+    if (["stage", "prepare"].includes(action) && pendingIntegration(c)) throw Error("integration_recovery_required_use_install_or_rollback");
+    if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(lockedStage(project, c.vencordRoot, dry), null, 2)); }
     if (action === "prepare") {
         if (!dry && !locked) return underLock();
         verifyWiring(c); // Authenticate the executable and mode before staging or running it.
-        if (dry) return console.log(JSON.stringify(stage(project, c.vencordRoot, true)));
-        console.log(JSON.stringify(stage(project, c.vencordRoot)));
+        if (dry) return console.log(JSON.stringify(lockedStage(project, c.vencordRoot, true)));
+        console.log(JSON.stringify(lockedStage(project, c.vencordRoot)));
         runUpdater(c, "rebuild"); return;
     }
     if (!["install", "update", "rollback", "uninstall"].includes(action)) throw Error("unknown_install_action");
     if (dry) {
-        if (action === "install" || action === "update") { verifyWiring(c); planSettings(c); planHelper(c); }
+        const recovery = pendingIntegration(c);
+        if (recovery) return console.log(JSON.stringify({ action, recovery: { kind: recovery.kind, commit: recovery.commit }, message: "Repeat the interrupted action while both profiles are closed; rollback can cancel an unactivated install." }));
+        if (action === "install" || action === "update") { verifyWiring(c); planSettings(c); planHelper(c); candidateDist(c, verifyCandidate(c).commit); }
         return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper launcher", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
     }
     if (processes().length) throw Error("vesktop_running_close_identified_profiles_gracefully_after_call_capture_preflight");
-    const settingsPath = join(c.mainProfile, "settings/settings.json");
+    if (!locked) return underLock();
+    const pending = pendingIntegration(c);
+    if (pending) {
+        const undo = action === "rollback" || action === "uninstall";
+        const result = finishIntegration(c, pending, expected => {
+            if (candidateDist(c, pending.commit) !== expected) throw Error("recovery_candidate_changed");
+            runUpdater(c, "activate");
+        }, undo);
+        if (!undo && pending.kind === "rollback") throw Error("rollback_recovered_reapply_updater_before_installation");
+        if (!undo && pending.commit !== execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()) throw Error("recovered_older_installation_prepare_current_head");
+        if (!undo || pending.kind === "rollback" || (result.cancelled && !existsSync(join(c.ledger, "installed.json")))) return console.log(JSON.stringify({ recovered: result, message: "Prepared transaction recovered; review the recorded commit before a newer update." }));
+    }
     if (action === "install" || action === "update") {
-        if (!locked) return underLock();
         const manifest = verifyCandidate(c);
         // The maintained updater inherits the held lock and retains candidate/activation checks.
         const wiring = verifyWiring(c);
@@ -254,24 +271,27 @@ export async function main(args) {
         if (rolledBack && realpathSync(join(c.vencordRoot, "dist")) !== rolledBack.dist) throw Error("rollback_build_drift");
         const settings = planSettings(c);
         const plan = planHelper(c);
-        const helper = compileHelper(project);
+        const helper = compileHelper(project, manifest.commit);
         pinBaseline(c);
-        runUpdater(c, "activate");
-        const active = realpathSync(join(c.vencordRoot, "dist"));
-        for (const file of ["vencordDesktopMain.js", "vencordDesktopRenderer.js"]) {
-            const text = regularBytes(join(active, file), "utf8");
-            if (!text.includes("PresenceGuard") || (file.includes("Renderer") && !text.includes(manifest.commit))) throw Error("active_build_identity_mismatch");
-        }
-        setupHelper(c, plan, helper, wiring.launcherMode);
-        atomic(settingsPath, JSON.stringify(settings));
+        const active = candidateDist(c, manifest.commit);
         const receipt = { commit: manifest.commit, helperHash: hash(helper), installedAt: new Date().toISOString(), dist: active, rendererHash: hash(regularBytes(join(active, "vencordDesktopRenderer.js"))), mainHash: hash(regularBytes(join(active, "vencordDesktopMain.js"))) };
-        atomic(join(c.ledger, "installed.json"), JSON.stringify(receipt, null, 2));
-        if (rolledBack) unlinkSync(join(c.ledger, "rolled-back.json"));
-        console.log(JSON.stringify(receipt, null, 2));
-        return;
+        const changes = [
+            { key: "helper", data: helper },
+            { key: "launcher", data: plan.launcher, mode: wiring.launcherMode },
+            { key: "launcherReceipt", data: `${hash(plan.launcher)}\n` },
+            { key: "settings", data: JSON.stringify(settings) }
+        ];
+        if (!existsSync(plan.configPath) || rolledBack) changes.push({ key: "helperConfig", data: JSON.stringify({ version: 1, snapshot: join(plan.root, "display.json"), welcome: true }) });
+        if (rolledBack) changes.push({ key: "rolledBack", data: null });
+        changes.push({ key: "installed", data: JSON.stringify(receipt, null, 2) });
+        const tx = prepareIntegration(c, "install", manifest.commit, active, changes);
+        finishIntegration(c, tx, expected => {
+            if (candidateDist(c, manifest.commit) !== expected) throw Error("activation_candidate_changed");
+            runUpdater(c, "activate");
+        });
+        console.log(JSON.stringify(receipt, null, 2)); return;
     }
     // Restore the pinned, hash-verified retained release, independent of later update history.
-    if (!locked) return underLock();
     const rolledBack = join(c.ledger, "rolled-back.json");
     if (!existsSync(join(c.ledger, "installed.json"))) throw Error("no_installation_receipt");
     const currentSettings = preflightRollback(c);
@@ -285,12 +305,14 @@ export async function main(args) {
     const current = realpathSync(join(c.vencordRoot, "dist"));
     const receipt = read(join(c.ledger, "installed.json"));
     if (current !== receipt.dist || hash(regularBytes(join(current, "vencordDesktopRenderer.js"))) !== receipt.rendererHash || hash(regularBytes(join(current, "vencordDesktopMain.js"))) !== receipt.mainHash) throw Error("active_build_changed_since_installation");
-    const link = join(c.vencordRoot, `.dist.presence-guard-${process.pid}`);
-    symlinkSync(baseline.dist, link); renameSync(link, join(c.vencordRoot, "dist"));
-    restoreExecutables(c, baseline);
-    atomic(settingsPath, JSON.stringify(settings));
-    atomic(join(c.mainProfile, "PresenceGuard/lease.json"), JSON.stringify({ enabled: false, at: Date.now() }));
-    atomic(rolledBack, JSON.stringify({ at: new Date().toISOString(), dist: baseline.dist }));
+    const tx = prepareIntegration(c, "rollback", receipt.commit, baseline.dist, [
+        { key: "launcher", data: regularBytes(join(c.ledger, "backups/main-launcher")), mode: baseline.modes["main-launcher"] },
+        { key: "settings", data: JSON.stringify(settings) },
+        { key: "lease", data: JSON.stringify({ enabled: false, at: Date.now() }) },
+        { key: "updater", data: regularBytes(join(c.ledger, "backups/updater")), mode: baseline.modes.updater },
+        { key: "rolledBack", data: JSON.stringify({ at: new Date().toISOString(), dist: baseline.dist }) }
+    ]);
+    finishIntegration(c, tx, () => { throw Error("rollback_does_not_execute_updater"); });
     console.log("Previous integration restored; local history and unrelated settings retained. Relaunch the previous profiles normally.");
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main(process.argv.slice(2));

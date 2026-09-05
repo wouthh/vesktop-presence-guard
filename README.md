@@ -79,14 +79,18 @@ platforms are not implemented or claimed tested. Vencord integration is pinned t
 Discord changes independently; runtime patch checks fail closed.
 
 - **Display:** a GJS/Gio helper reads Mutter power state, logical monitor topology,
-  idle time, lock and suspend signals, reconciling current login1 sleep state
+  idle time, screen-shield activity, actual login1 lock state and suspend signals,
+  reconciling current login1 sleep state
   after subscription gaps. It follows the desktop's existing idle
   delay, changes no power policy, requires a preceding inactivity-to-blanking
   sequence and labels its cause **inferred**. A manual lock, monitor removal,
   startup already blanked, provider restart or suspend gap cannot establish that
   sequence. Lock already present at startup or reconnect, or arriving before or
   together with blanking, remains Unknown; the
-  interface cannot prove whether that lock was manual or automatic. Return requires powered-on displays and recent actual activity.
+  interface cannot prove whether that lock was manual or automatic. Screen-shield
+  activity is kept distinct from locking and conservatively treated as ambiguous
+  when it precedes blanking. The lock hint must come from the current user's
+  active Wayland session; missing or unsupported session state stays Unknown. Return requires powered-on displays and recent actual activity.
   Window visibility is not used. The helper collects only during a fresh plugin
   lease and exits with its owning main launch process. It publishes a bounded
   snapshot through an existing read-only build-directory grant; no added Flatpak

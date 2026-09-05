@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { PipeWireDetector, combineCamera, cameraSnapshot } from "../src/core/camera";
 import { DisplayDetector, type DisplayObservation } from "../src/core/display";
 import { UNKNOWN } from "../src/core/types";
-const display = (extra: Partial<DisplayObservation> = {}): DisplayObservation => ({ at: 1000, power: 0, idleMs: 0, thresholdMs: 300000, locked: false, suspended: false, topology: "synthetic-topology", monitors: 2, provider: "synthetic-provider", ...extra });
+const display = (extra: Partial<DisplayObservation> = {}): DisplayObservation => ({ at: 1000, power: 0, idleMs: 0, thresholdMs: 300000, locked: false, shieldActive: false, suspended: false, topology: "synthetic-topology", monitors: 2, provider: "synthetic-provider", ...extra });
 test("display needs correlated idle and power transition; confirms activity return", () => {
     const d = new DisplayDetector(); assert.equal(d.observe(display({ idleMs: 299000 })).value, "unknown"); assert.equal(d.observe(display({ at: 3000, idleMs: 301000, power: 3 })).value, "inactive"); assert.equal(d.observe(display({ at: 5000 })).value, "active");
 });
@@ -91,4 +91,15 @@ test("a lock already present at startup, reset or continuity loss cannot authori
 test("an unlocked suspend sample cannot supply the preceding inactivity evidence", () => {
     const d = new DisplayDetector(); d.observe(display({ suspended: true, idleMs: 299000 }));
     assert.equal(d.observe(display({ at: 3000, power: 3, idleMs: 301000 })).value, "unknown");
+});
+
+test("an active screen shield is distinct from an unlocked session and cannot prove return", () => {
+    const d = new DisplayDetector(); d.observe(display());
+    assert.equal(d.observe(display({ at: 2000, shieldActive: true, locked: false })).value, "unknown");
+    assert.equal(d.observe(display({ at: 3000, shieldActive: true, locked: false, power: 3, idleMs: 301000 })).value, "unknown");
+    assert.equal(d.observe(display({ at: 4000, shieldActive: false, locked: false, idleMs: 1000 })).value, "active");
+});
+test("missing screen-shield state is unknown even with a known unlocked session", () => {
+    const sample = display(); delete (sample as Partial<DisplayObservation>).shieldActive;
+    assert.equal(new DisplayDetector().observe(sample).value, "unknown");
 });

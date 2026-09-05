@@ -122,7 +122,7 @@ test("helper lease expires, rejects future/malformed data, and identity handles 
 });
 
 test("staging CLI creates an absent updater runtime directory and remains repeatable", t => {
-    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => { rmSync(root, { recursive: true, force: true }); rmSync(root + ".presence-guard-stage.lock", { force: true }); });
     const mainProfile = join(root, "main"), altProfile = join(root, "alt"); mkdirSync(mainProfile); mkdirSync(altProfile);
     writeFileSync(join(mainProfile, "state.json"), JSON.stringify({ vencordDir: join(root, "dist") }));
     const c = { vencordRoot: root, mainProfile, altProfile, mainLauncher: join(root, "launcher"), updater: join(root, "updater"), ledger: join(root, "ledger"), updaterLock: join(root, "runtime/lock") };
