@@ -73,7 +73,8 @@ Discord changes independently; runtime patch checks fail closed.
   delay, changes no power policy, requires a preceding inactivity-to-blanking
   sequence and labels its cause **inferred**. A manual lock, monitor removal,
   startup already blanked, provider restart or suspend gap cannot establish that
-  sequence. Lock arriving before or together with blanking remains Unknown; the
+  sequence. Lock already present at startup or reconnect, or arriving before or
+  together with blanking, remains Unknown; the
   interface cannot prove whether that lock was manual or automatic. Return requires powered-on displays and recent actual activity.
   Window visibility is not used. The helper collects only during a fresh plugin
   lease and exits with its owning main launch process. It publishes a bounded

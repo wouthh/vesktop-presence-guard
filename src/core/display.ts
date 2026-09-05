@@ -29,9 +29,10 @@ export class DisplayDetector {
         }
         const p = this.previous;
         this.previous = o;
-        const gap = p && (o.at < p.at || o.at - p.at > 10_000 || o.provider !== p.provider || o.topology !== p.topology || o.thresholdMs !== p.thresholdMs);
+        const gap = p && (p.suspended || o.at < p.at || o.at - p.at > 10_000 || o.provider !== p.provider || o.topology !== p.topology || o.thresholdMs !== p.thresholdMs);
+        if (!p) this.manualLock = o.locked;
         if (o.suspended || gap) {
-            this.qualifying = false; this.manualLock = false;
+            this.qualifying = false; this.manualLock = o.locked;
             return UNKNOWN(scope, o.suspended ? "system_suspended" : "display_continuity_lost", o.at);
         }
         if (p && !p.locked && o.locked && p.power === 0) this.manualLock = true;

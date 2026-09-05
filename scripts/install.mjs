@@ -131,7 +131,9 @@ export function planHelper(c) {
     const configPath = join(native, "installation.json");
     if (existsSync(configPath) && (lstatSync(configPath).isSymbolicLink() || read(configPath).snapshot !== join(root, "display.json") || read(configPath).version !== 1)) throw Error("helper_configuration_drift");
     const helperPath = join(root, "display-helper.mjs"), receipt = join(c.ledger, "installed.json");
-    if (existsSync(helperPath) && (lstatSync(helperPath).isSymbolicLink() || !existsSync(receipt) || hash(readFileSync(helperPath)) !== read(receipt).helperHash)) throw Error("installed_helper_drift");
+    const helperStat = statOrNull(helperPath), hasReceipt = existsSync(receipt);
+    if (hasReceipt && !existsSync(configPath)) throw Error("installed_helper_configuration_missing");
+    if (Boolean(helperStat) !== hasReceipt || (helperStat && (!helperStat.isFile() || helperStat.isSymbolicLink() || hash(readFileSync(helperPath)) !== read(receipt).helperHash))) throw Error("installed_helper_drift");
     const launcher = readFileSync(c.mainLauncher, "utf8");
     const marker = "# PresenceGuard process-bound observer";
     const installed = join(c.ledger, "installed-launcher.sha256");

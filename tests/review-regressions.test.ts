@@ -88,3 +88,16 @@ test("releasing monitoring unsubscribes despite failed snapshot storage", () => 
     releaseMonitoring(() => { attempts++; throw Error("read_only_storage"); }, () => subscriptions.clear());
     assert.equal(attempts, 1); assert.equal(subscriptions.size, 0);
 });
+
+test("update rejects a missing installed helper or configuration before mutation", t => {
+    const root = mkdtempSync(join(tmpdir(), "presence-guard-test-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+    const c = { vencordRoot: root, mainProfile: join(root, "main"), mainLauncher: join(root, "launcher"), ledger: join(root, "ledger") };
+    mkdirSync(join(c.mainProfile, "PresenceGuard"), { recursive: true }); mkdirSync(c.ledger);
+    const launcher = "#!/bin/sh\nexec mullvad-exclude flatpak run dev.vencord.Vesktop\n";
+    writeFileSync(c.mainLauncher, launcher); writeFileSync(join(c.ledger, "installed.json"), JSON.stringify({ helperHash: "synthetic" }));
+    assert.throws(() => planHelper(c), /configuration_missing/);
+    const config = join(c.mainProfile, "PresenceGuard/installation.json");
+    writeFileSync(config, JSON.stringify({ version: 1, snapshot: join(root, ".presence-guard/display.json") }));
+    assert.throws(() => planHelper(c), /installed_helper_drift/);
+    assert.equal(readFileSync(c.mainLauncher, "utf8"), launcher); assert.deepEqual(readdirSync(c.mainProfile), ["PresenceGuard"]);
+});

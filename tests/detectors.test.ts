@@ -65,3 +65,22 @@ test("a lock before or simultaneous with blanking stays ambiguous even above the
     assert.equal(d.observe(display({ at: 3000, idleMs: 301000, power: 3 })).value, "inactive");
     assert.equal(d.observe(display({ at: 4000, idleMs: 302000, power: 3, locked: true })).value, "inactive");
 });
+
+test("a lock already present at startup, reset or continuity loss cannot authorize later blanking", () => {
+    for (const boundary of ["startup", "reset", "gap", "provider", "suspend"] as const) {
+        const d = new DisplayDetector();
+        if (boundary !== "startup") d.observe(display());
+        if (boundary === "reset") d.reset();
+        if (boundary === "suspend") d.observe(display({ at: 1500, suspended: true, locked: true }));
+        const at = boundary === "gap" ? 30000 : 2000;
+        const provider = boundary === "provider" ? "new-provider" : "synthetic-provider";
+        assert.equal(d.observe(display({ at, provider, locked: true, idleMs: 299000 })).value, "unknown");
+        assert.equal(d.observe(display({ at: at + 2000, provider, locked: true, idleMs: 301000, power: 3 })).value, "unknown");
+        assert.equal(d.observe(display({ at: at + 3000, provider })).value, "active");
+    }
+});
+
+test("an unlocked suspend sample cannot supply the preceding inactivity evidence", () => {
+    const d = new DisplayDetector(); d.observe(display({ suspended: true, idleMs: 299000 }));
+    assert.equal(d.observe(display({ at: 3000, power: 3, idleMs: 301000 })).value, "unknown");
+});

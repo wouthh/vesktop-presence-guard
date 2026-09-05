@@ -48,6 +48,8 @@ hash; ignored build artifacts are never installed as trusted input. Launcher and
 helper configuration and the installation receipt target are checked before
 candidate activation. Unexpected directories, symlinks and read-only receipt
 targets stop the operation before integration changes.
+An installation receipt also requires its recorded helper and configuration to
+remain present; updates do not silently recreate missing installed artifacts.
 
 Immediately before restart, verify **neither profile has a call or capture**.
 If reliable client inspection is unavailable, obtain an explicit no-call/capture
