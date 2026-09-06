@@ -1,0 +1,28 @@
+{
+  "name": "vesktop-presence-guard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "engines": { "node": ">=22.12" },
+  "packageManager": "pnpm@11.14.0",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "tsx --test tests/*.test.ts",
+    "lint": "eslint src/core src/patches.ts helper tests scripts",
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "stage": "node scripts/install.mjs stage",
+    "inspect": "node scripts/install.mjs inspect",
+    "install:local": "node scripts/install.mjs install",
+    "rollback": "node scripts/install.mjs rollback"
+  },
+  "devDependencies": {
+    "@types/node": "26.0.1",
+    "esbuild": "0.28.1",
+    "eslint": "10.6.0",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.62.1"
+  }
+}
