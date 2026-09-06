@@ -13,6 +13,7 @@ import { isAbsolute, join } from "path";
 import { displayFacts } from "./core/displayFacts";
 import { mergeHistory, retain } from "./core/history";
 import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
+import { pipeWireGraph } from "./core/pipeWireSnapshot";
 import { HistoryEvent, status } from "./core/types";
 
 const directory = join(DATA_DIR, "PresenceGuard");
@@ -88,7 +89,7 @@ export async function pipeWireSnapshot(_: IpcMainInvokeEvent): Promise<string | 
     if (pwBusy) return null;
     pwBusy = true;
     try {
-        return await new Promise(resolve => execFile("/usr/bin/pw-dump", ["--no-colors"], { timeout: 2000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" }, (error, stdout) => resolve(error ? null : stdout)));
+        return await pipeWireGraph((selector, timeout, maxBytes) => new Promise(resolve => execFile("/usr/bin/pw-dump", ["--no-colors", selector], { timeout, maxBuffer: maxBytes, encoding: "utf8" }, (error, stdout) => resolve(error ? null : stdout))));
     } finally { pwBusy = false; }
 }
 export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {

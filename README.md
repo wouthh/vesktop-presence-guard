@@ -115,6 +115,14 @@ Discord changes independently; runtime patch checks fail closed.
   camera provider does not prevent eligible Idle acquisition, but cannot clear
   camera-owned DND or authorize return to Online.
 
+PipeWire capture can include browsers and other desktop applications, not just
+Vesktop. Coverage depends on their capture path; direct V4L2 remains unproven.
+The native query reads only Core, Node and Link objects, avoiding unrelated Port
+parameters that Flatpak's PipeWire 1.4.9 tool cannot serialize against the tested
+1.6.8 host. Node identities/states and daemon identity must remain stable around
+the link query. All five bounded reads share a two-second/four-MiB budget;
+malformed relevant objects or inconsistent observations produce Unknown.
+
 Queries are bounded, reconciled every two seconds, and expire after ten seconds.
 The initial host probes confirmed available display interfaces and a suspended
 hardware camera node. **Physical blanking/capture cycles still require the
