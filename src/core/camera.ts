@@ -9,7 +9,7 @@ import { fresh, type Signal,UNKNOWN } from "./types";
 type PW = { id: number; type: string; info?: { cookie?: number; state?: string; props?: Record<string, unknown>; "output-node-id"?: number; "input-node-id"?: number } };
 const scope = "Partial: PipeWire hardware webcam capture; direct V4L2 not covered";
 export class PipeWireDetector {
-    private active = new Set<number>();
+    private active = new Map<number, number>();
     private cookie: number | undefined;
     private lostCapture = false;
     reset() { this.active.clear(); this.cookie = undefined; this.lostCapture = false; }
@@ -30,7 +30,8 @@ export class PipeWireDetector {
             const p = n.info?.props;
             return p?.["media.class"] === "Video/Source" && p["device.api"] === "v4l2" && p["api.v4l2.cap.driver"] === "uvcvideo" && p["node.virtual"] !== true && p["node.virtual"] !== "true";
         });
-        const active = new Set<number>();
+        if (cameras.some(c => !Number.isSafeInteger(c.info?.props?.["object.serial"]))) return UNKNOWN(scope, "camera_identity_unavailable", at);
+        const active = new Map<number, number>();
         for (const camera of cameras) {
             if (camera.info?.state !== "running") continue;
             const capture = objects.some(link => {
@@ -38,12 +39,12 @@ export class PipeWireDetector {
                 const consumer = nodes.get(link.info["input-node-id"]!);
                 return consumer?.info?.state === "running" && consumer.info.props?.["media.class"] === "Stream/Input/Video";
             });
-            if (capture) active.add(camera.id);
+            if (capture) active.set(camera.id, camera.info!.props!["object.serial"] as number);
         }
         if (active.size) { this.lostCapture = false; this.active = active; return { value: "active", at, scope, reason: "running_hardware_camera_linked_to_capture" }; }
         if (this.lostCapture) return UNKNOWN(scope, "capture_provider_restarted", at);
         // Missing previously observed cameras may mean visibility changed, not that capture stopped.
-        if ([...this.active].some(id => !cameras.some(c => c.id === id))) return UNKNOWN(scope, "previous_camera_missing", at);
+        if ([...this.active].some(([id, serial]) => !cameras.some(c => c.id === id && c.info?.props?.["object.serial"] === serial))) return UNKNOWN(scope, "previous_camera_missing", at);
         if (cameras.some(c => !["idle", "suspended"].includes(c.info?.state ?? ""))) return UNKNOWN(scope, "camera_graph_ambiguous", at);
         if (!cameras.length) return UNKNOWN(scope, "no_visible_supported_camera", at);
         this.active.clear();

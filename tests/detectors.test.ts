@@ -20,11 +20,24 @@ test("display provider restart, gap, suspend, malformed and unavailable are Unkn
 });
 const node = (id: number, state: string, props: object) => ({ id, type: "PipeWire:Interface:Node", info: { state, props } });
 const core = { id: 0, type: "PipeWire:Interface:Core", info: { cookie: 123 } };
-const camera = (state = "running") => node(10, state, { "media.class": "Video/Source", "device.api": "v4l2", "api.v4l2.cap.driver": "uvcvideo" });
+const camera = (state = "running", serial: number | undefined = 100) => node(10, state, { "media.class": "Video/Source", "device.api": "v4l2", "api.v4l2.cap.driver": "uvcvideo", "object.serial": serial });
 const consumer = node(20, "running", { "media.class": "Stream/Input/Video" });
 const link = { id: 30, type: "PipeWire:Interface:Link", info: { state: "active", "output-node-id": 10, "input-node-id": 20 } };
 test("camera requires hardware provenance, running capture consumer and active link", () => {
     const d = new PipeWireDetector(); assert.equal(d.parse(JSON.stringify([core, camera(), consumer, link]), 1).value, "active"); assert.equal(d.parse(JSON.stringify([core, camera("suspended"), consumer]), 2).value, "inactive");
+});
+test("a recycled camera ID cannot confirm that the previous capture stopped", () => {
+    const d = new PipeWireDetector();
+    assert.equal(d.parse(JSON.stringify([core, camera(), consumer, link]), 1).value, "active");
+    const replaced = d.parse(JSON.stringify([core, camera("suspended", 200)]), 2);
+    assert.equal(replaced.value, "unknown"); assert.equal(replaced.reason, "previous_camera_missing");
+    assert.equal(combineCamera(replaced, { value: "inactive", at: 2, scope: "fixture", reason: "local_clear" }, 2).value, "unknown");
+    assert.equal(d.parse(JSON.stringify([core, camera("suspended", 200)]), 3).value, "unknown");
+    assert.equal(d.parse(JSON.stringify([core, camera("suspended")]), 4).value, "inactive");
+});
+test("missing stable camera identity stays Unknown", () => {
+    const c = camera(); delete (c.info.props as Record<string, unknown>)["object.serial"];
+    assert.equal(new PipeWireDetector().parse(JSON.stringify([core, c, consumer, link]), 1).reason, "camera_identity_unavailable");
 });
 test("connected camera, playback, generic video and screen sharing are not positive capture", () => {
     for (const graph of [[camera("suspended")], [camera()], [node(10, "running", { "media.class": "Video/Source" }), consumer, link], [camera(), node(20, "running", { "media.class": "Stream/Output/Video" }), link]]) assert.notEqual(new PipeWireDetector().parse(JSON.stringify([core, ...graph]), 1).value, "active");
