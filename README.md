@@ -124,6 +124,7 @@ the link query. All five bounded reads share a two-second/four-MiB budget;
 malformed relevant objects or inconsistent observations produce Unknown.
 Captured cameras retain their node ID and stable object serial across polls;
 reusing a disappeared camera's numeric ID does not confirm capture cessation.
+Another active camera cannot erase an unresolved disappeared capture either.
 
 Queries are bounded, reconciled every two seconds, and expire after ten seconds.
 The initial host probes confirmed available display interfaces and a suspended

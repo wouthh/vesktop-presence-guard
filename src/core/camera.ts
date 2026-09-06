@@ -9,6 +9,7 @@ import { fresh, type Signal,UNKNOWN } from "./types";
 type PW = { id: number; type: string; info?: { cookie?: number; state?: string; props?: Record<string, unknown>; "output-node-id"?: number; "input-node-id"?: number } };
 const scope = "Partial: PipeWire hardware webcam capture; direct V4L2 not covered";
 export class PipeWireDetector {
+    // Stable serial -> numeric ID, retained until that exact capture is cleared.
     private active = new Map<number, number>();
     private cookie: number | undefined;
     private lostCapture = false;
@@ -39,12 +40,19 @@ export class PipeWireDetector {
                 const consumer = nodes.get(link.info["input-node-id"]!);
                 return consumer?.info?.state === "running" && consumer.info.props?.["media.class"] === "Stream/Input/Video";
             });
-            if (capture) active.set(camera.id, camera.info!.props!["object.serial"] as number);
+            if (capture) active.set(camera.info!.props!["object.serial"] as number, camera.id);
         }
-        if (active.size) { this.lostCapture = false; this.active = active; return { value: "active", at, scope, reason: "running_hardware_camera_linked_to_capture" }; }
+        for (const [serial, id] of this.active) {
+            if (cameras.some(c => c.id === id && c.info?.props?.["object.serial"] === serial && ["idle", "suspended"].includes(c.info?.state ?? ""))) this.active.delete(serial);
+        }
+        for (const [serial, id] of active) {
+            if (this.active.size >= 20_000 && !this.active.has(serial)) return UNKNOWN(scope, "camera_continuity_capacity", at);
+            this.active.set(serial, id);
+        }
+        if (active.size) { this.lostCapture = false; return { value: "active", at, scope, reason: "running_hardware_camera_linked_to_capture" }; }
         if (this.lostCapture) return UNKNOWN(scope, "capture_provider_restarted", at);
         // Missing previously observed cameras may mean visibility changed, not that capture stopped.
-        if ([...this.active].some(([id, serial]) => !cameras.some(c => c.id === id && c.info?.props?.["object.serial"] === serial))) return UNKNOWN(scope, "previous_camera_missing", at);
+        if ([...this.active].some(([serial, id]) => !cameras.some(c => c.id === id && c.info?.props?.["object.serial"] === serial))) return UNKNOWN(scope, "previous_camera_missing", at);
         if (cameras.some(c => !["idle", "suspended"].includes(c.info?.state ?? ""))) return UNKNOWN(scope, "camera_graph_ambiguous", at);
         if (!cameras.length) return UNKNOWN(scope, "no_visible_supported_camera", at);
         this.active.clear();
