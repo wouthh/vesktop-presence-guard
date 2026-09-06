@@ -58,6 +58,19 @@ test("same-version staging can recover an interruption between directory renames
     assert.throws(() => stage(f.project, f.vc, false, io), /interrupted/);
     assert.deepEqual(stage(f.project, f.vc), f.initial);
 });
+test("interrupted recursive cleanup cannot leave the restored current tree partial", t => {
+    const f = fixture(t); let rename = 0;
+    assert.throws(() => stage(f.project, f.vc, false, { ...fs, renameSync: (...args: any[]) => {
+        if (++rename === 4) throw Error("receipt_not_committed");
+        return (fs.renameSync as any)(...args);
+    } }), /receipt_not_committed/);
+    assert.throws(() => stage(f.project, f.vc, false, { ...fs, rmSync: (path: string) => {
+        const first = Object.keys(inventory(path))[0]; fs.unlinkSync(join(path, first));
+        throw Error("partial_recursive_remove");
+    } }), /partial_recursive_remove/);
+    assert.deepEqual(inventory(f.initial.destination), f.before);
+    const retry = stage(f.project, f.vc); verifyStaged(f.project, retry.destination, retry.commit);
+});
 
 test("edits to the old generation during preparation remain untouched", t => {
     const f = fixture(t), receipt = fs.readFileSync(f.receipt, "utf8");

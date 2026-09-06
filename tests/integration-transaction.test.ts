@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 // @ts-expect-error Production JavaScript tooling is linted and tested directly.
-import { finishIntegration, pendingIntegration, prepareIntegration, integrationPaths } from "../scripts/integration-transaction.mjs";
+import { finishIntegration, pendingIntegration, prepareIntegration, integrationPaths, snapshotIntegrationTargets } from "../scripts/integration-transaction.mjs";
 
 function fixture(t: any, kind = "install") {
     const root = fs.mkdtempSync(join(tmpdir(), "presence-guard-integration-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -67,6 +67,17 @@ test("recovery preserves unrelated edits instead of overwriting them", t => {
     const f = fixture(t), tx = f.prepare(); f.activate(f.after); fs.writeFileSync(f.c.mainLauncher, "unexplained edit");
     assert.throws(() => finishIntegration(f.c, tx, f.activate), /target_drift/);
     assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "unexplained edit"); assert(pendingIntegration(f.c));
+});
+for (const kind of ["install", "rollback"]) test(`${kind} rejects settings or launcher edits made after planning began`, t => {
+    for (const key of ["settings", "launcher"]) {
+        const f = fixture(t, kind), before = snapshotIntegrationTargets(f.c);
+        const planned = f.changes.map(change => ({ ...change, expectedBefore: before[change.key] }));
+        const path = integrationPaths(f.c)[key]; fs.writeFileSync(path, "new unrelated user edit");
+        assert.throws(() => prepareIntegration(f.c, kind, "a".repeat(40), f.after, planned), /preflight_target_drift/);
+        assert.equal(fs.readFileSync(path, "utf8"), "new unrelated user edit");
+        assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
+        assert.equal(pendingIntegration(f.c), null);
+    }
 });
 
 test("prepared-image symlinks are rejected before activating or writing targets", t => {

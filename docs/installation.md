@@ -55,11 +55,13 @@ Git metadata pins the previous marker before any replacement; editing both sourc
 and its colocated marker cannot silently authorize deletion. Marker and receipt
 reads reject symlinks, FIFOs and oversized files without blocking.
 Receipt writability is checked before replacing the old staging tree.
-A replacement is built and synced in a hidden sibling directory before changing
+A replacement is built and synced in a hidden Git-metadata directory before changing
 the old tree. A bounded recovery record in Git metadata preserves both generations
 until the new tree and receipt are committed. A normal locked retry validates and
 recovers an interrupted transaction; a dry run reports recovery is required.
-Unexpected changes stop recovery without deleting them. An interrupted cleanup
+Unexpected changes stop recovery without deleting them. Recovery of an uncommitted
+stage restores the old current tree by atomic rename before deleting the discarded tree,
+so partial recursive deletion cannot strand the live staging path. Cleanup
 can leave hidden generated directories for later inspection; never remove
 unexplained directories to bypass a receipt failure. Legacy staging can
 be attested only when it matches current canonical source exactly. `prepare`
@@ -151,7 +153,10 @@ restore whole profile backups over newer authentication or unrelated settings.
 
 Before activation or rollback, the installer durably prepares the exact target
 files and atomically publishes a complete `integration-transaction.json` in the
-private ledger. A crash during journal preparation leaves the published journal
+private ledger. Each target must still match the hash and permissions captured
+before planning began; edits during helper compilation or other preflight checks
+cannot be adopted and overwritten by an older settings or launcher plan.
+A crash during journal preparation leaves the published journal
 absent and the live integration untouched. Recovery authenticates the original
 descriptor paths and unchanged updater/receipt, including complete permission bits.
 Both profiles must remain closed. Repeating the interrupted command verifies the

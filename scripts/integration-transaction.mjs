@@ -25,6 +25,7 @@ function state(path) {
     if (stat && stat.mode & 0o7000) throw Error("unexpected_special_permission_bits");
     return stat ? { hash: hash(regularBytes(path)), mode: stat.mode & 0o7777 } : null;
 }
+export const snapshotIntegrationTargets = c => Object.fromEntries(Object.entries(integrationPaths(c)).map(([key, path]) => [key, state(path)]));
 function retained(c, path) {
     const root = fs.realpathSync(join(c.vencordRoot, ".wout-releases"));
     if (typeof path !== "string" || dirname(dirname(path)) !== root || basename(path) !== "dist" || fs.realpathSync(path) !== path) throw Error("transaction_release_outside_retained_root");
@@ -57,10 +58,12 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
     if (Object.values(guards).some(value => !value)) throw Error("integration_wiring_missing");
     const tx = { version: 1, kind, commit, id, descriptorHash: descriptorHash(c), guards, beforeDist: retained(c, fs.realpathSync(join(c.vencordRoot, "dist"))), afterDist: retained(c, afterDist), files: [] };
     try {
-        for (const { key, data, mode = 0o600 } of changes) {
+        for (const change of changes) {
+            const { key, data, mode = 0o600 } = change;
             if (!Object.hasOwn(paths, key) || tx.files.some(f => f.key === key)) throw Error("invalid_integration_target");
             if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) throw Error("invalid_integration_mode");
             const path = paths[key], before = state(path);
+            if (Object.hasOwn(change, "expectedBefore") && !same(before, change.expectedBefore)) throw Error("integration_preflight_target_drift");
             io.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
             const parent = io.lstatSync(dirname(path));
             if (!parent.isDirectory() || parent.isSymbolicLink()) throw Error("unsafe_integration_parent");

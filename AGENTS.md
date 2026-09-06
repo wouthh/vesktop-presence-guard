@@ -57,6 +57,8 @@ source validation, retained-release activation and rollback. A call/capture or
 an uncertain restart preflight blocks restart, not independent build work.
 Compile installed helper code from the recorded Git tree. Serialize staging with
 the integration check; prepare durable file images before activation or rollback.
+Bind target images to file states captured before planning; restore staging trees
+by atomic rename before recursively removing discarded generations.
 Recover interrupted operations only after validating recorded before/after state.
 History survives uninstall by default. Stop helper collection when its lease
 ends and terminate it with its owning application process.

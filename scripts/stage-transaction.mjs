@@ -45,12 +45,19 @@ export function recoverStage(destination, receipt, inventory, dry = false, io = 
     if (!committed && trees.previous) {
         if (trees.current && !equal(trees.current, tx.nextFiles)) throw Error("staging_recovery_current_drift");
     } else if (!committed && !equal(trees.current, tx.previousFiles) && !(tx.previousFiles === null && equal(trees.current, tx.nextFiles))) throw Error("staging_recovery_original_missing");
+    if (!committed && trees.current && trees.next && (trees.previous || tx.previousFiles === null)) throw Error("staging_recovery_next_conflict");
     // All paths and contents are checked before the first recovery mutation.
     assertStagingParents(destination);
+    const move = (from, to) => {
+        io.renameSync(from, to);
+        syncDirectory(dirname(destination), io); syncDirectory(dirname(receipt), io);
+    };
     if (!committed && trees.previous) {
-        if (trees.current) io.rmSync(destination, { recursive: true });
-        io.renameSync(p.previous, destination);
-    } else if (!committed && tx.previousFiles === null && trees.current) io.rmSync(destination, { recursive: true });
+        // Restore the old tree before garbage collection. Partial removal of the
+        // discarded next tree must never strand a partial current generation.
+        if (trees.current) move(destination, p.next);
+        move(p.previous, destination);
+    } else if (!committed && tx.previousFiles === null && trees.current) move(destination, p.next);
     syncDirectory(dirname(destination), io); syncDirectory(dirname(receipt), io);
     io.unlinkSync(journal); syncDirectory(dirname(receipt), io);
     for (const path of [p.next, p.previous]) if (present(path)) io.rmSync(path, { recursive: true });

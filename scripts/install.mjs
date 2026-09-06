@@ -8,7 +8,7 @@ import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
 import { regularBytes, descriptorBytes } from "./regular-file.mjs";
 import { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
 import { lockedStage, stageLock } from "./locked-stage.mjs";
-import { finishIntegration, pendingIntegration, prepareIntegration } from "./integration-transaction.mjs";
+import { finishIntegration, pendingIntegration, prepareIntegration, snapshotIntegrationTargets } from "./integration-transaction.mjs";
 import { compileHelper } from "./helper-build.mjs";
 import { publishBaseline } from "./baseline-publication.mjs";
 
@@ -294,6 +294,7 @@ export async function main(args) {
     }
     if (action === "install" || action === "update") {
         const manifest = verifyCandidate(c);
+        const preflight = snapshotIntegrationTargets(c);
         // The maintained updater inherits the held lock and retains candidate/activation checks.
         const wiring = verifyWiring(c);
         const rolledBack = rollbackRecord(c);
@@ -313,7 +314,7 @@ export async function main(args) {
         if (!existsSync(plan.configPath) || rolledBack) changes.push({ key: "helperConfig", data: JSON.stringify({ version: 1, snapshot: join(plan.root, "display.json"), welcome: true }) });
         if (rolledBack) changes.push({ key: "rolledBack", data: null });
         changes.push({ key: "installed", data: JSON.stringify(receipt, null, 2) });
-        const tx = prepareIntegration(c, "install", manifest.commit, active, changes);
+        const tx = prepareIntegration(c, "install", manifest.commit, active, changes.map(change => ({ ...change, expectedBefore: preflight[change.key] })));
         finishIntegration(c, tx, expected => {
             if (candidateDist(c, manifest.commit) !== expected) throw Error("activation_candidate_changed");
             runUpdater(c, "activate");
@@ -323,6 +324,7 @@ export async function main(args) {
     // Restore the pinned, hash-verified retained release, independent of later update history.
     const rolledBack = join(c.ledger, "rolled-back.json");
     if (!existsSync(join(c.ledger, "installed.json"))) throw Error("no_installation_receipt");
+    const preflight = snapshotIntegrationTargets(c);
     const currentSettings = preflightRollback(c);
     const baseline = pinBaseline(c);
     if (existsSync(rolledBack)) {
@@ -341,7 +343,7 @@ export async function main(args) {
         { key: "lease", data: JSON.stringify({ enabled: false, at: Date.now() }) },
         { key: "updater", data: regularBytes(join(c.ledger, "backups/updater")), mode: baseline.modes.updater },
         { key: "rolledBack", data: JSON.stringify({ at: new Date().toISOString(), dist: baseline.dist }) }
-    ]);
+    ].map(change => ({ ...change, expectedBefore: preflight[change.key] })));
     finishIntegration(c, tx, () => { throw Error("rollback_does_not_execute_updater"); });
     console.log("Previous integration restored; local history and unrelated settings retained. Relaunch the previous profiles normally.");
 }
