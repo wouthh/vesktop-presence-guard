@@ -17,6 +17,7 @@ import { DisplayDetector } from "./core/display";
 import { describeDisplayFacts } from "./core/displayFacts";
 import { PresenceEngine } from "./core/engine";
 import { clearHistoryView, loadHistoryView, retain } from "./core/history";
+import { HistoryWriter } from "./core/historyWriter";
 import { statusMutator } from "./core/mutator";
 import { PersistenceHealth } from "./core/persistenceHealth";
 import { Provenance } from "./core/provenance";
@@ -34,6 +35,7 @@ const Idle = findStoreLazy("IdleStore");
 const Voice = findStoreLazy("RTCConnectionStore");
 const provenance = new Provenance();
 const persistenceHealth = new PersistenceHealth();
+const historyWriter = new HistoryWriter(event => Native.appendHistory(event), Date.now);
 const displayDetector = new DisplayDetector();
 const pipewireDetector = new PipeWireDetector();
 const tracks = new CameraTracks(() => { void poll(); });
@@ -48,7 +50,6 @@ const manualActions = new WeakSet<object>();
 let cameraHook = false;
 let cameraContinuity = true;
 let connectionFresh = false;
-let panelMounted = false;
 let patchError = "starting";
 let updater: any;
 let connectionStates: any;
@@ -79,9 +80,11 @@ function read(): Snapshot {
 }
 function record(event: HistoryEvent) {
     events = retain([...events, event], Date.now());
-    void persistenceHealth.run("history_write", () => Native.appendHistory(event)).then(notify, notify);
+    historyWriter.enqueue(event);
+    void persistPending();
     notify();
 }
+function persistPending() { return persistenceHealth.run("history_write", () => historyWriter.flush()).then(notify, notify); }
 function configure() { engine?.configure(options()); notify(); }
 function validateHooks() {
     try {
@@ -119,6 +122,7 @@ async function poll() {
     const epoch = lifecycle;
     try {
         validateHooks();
+        void persistPending();
         await Native.lease(true);
         const [d, camera] = await Promise.all([Native.displaySnapshot(), Native.pipeWireSnapshot()]);
         if (epoch !== lifecycle || !engine?.running) return;
@@ -128,7 +132,7 @@ async function poll() {
         localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: tracks.live ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_muted_or_disabled" : "no_observed_live_camera_track" };
         engine.sample();
         const s = read();
-        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, cameraReason: s.camera.reason, statusHooks, cameraHook, panelMounted, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, storageHealth: persistenceHealth.summary }));
+        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, cameraReason: s.camera.reason, statusHooks, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, storageHealth: persistenceHealth.summary }));
         notify();
     } catch { if (epoch === lifecycle) { display = UNKNOWN("GNOME", "native_poll_failed"); pwCamera = UNKNOWN("PipeWire", "native_poll_failed"); engine?.sample(); } }
     finally { polling = false; }
@@ -143,7 +147,7 @@ function mode() {
 }
 function Panel() {
     const [, render] = useState(0);
-    React.useEffect(() => { const update = () => render(n => n + 1); changes.add(update); panelMounted = true; void poll(); return () => { changes.delete(update); }; }, []);
+    React.useEffect(() => { const update = () => render(n => n + 1); changes.add(update); void poll(); return () => { changes.delete(update); }; }, []);
     settings.use(["observe", "idle", "camera"]);
     const s = read();
     const [message, setMessage] = useState("");
@@ -151,7 +155,7 @@ function Panel() {
         <Forms.FormTitle>PresenceGuard — {mode()}</Forms.FormTitle>
         <Forms.FormText>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Forms.FormText>
         <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Safety hooks: {patchError}.</Forms.FormText>
-        <Forms.FormText>Local storage: {persistenceHealth.summary}.</Forms.FormText>
+        <Forms.FormText>Local storage: {persistenceHealth.summary}. Pending history events: {historyWriter.pendingCount}.</Forms.FormText>
         <Forms.FormText>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Forms.FormText>
         <Forms.FormText>{describeDisplayFacts(s.display.facts)}. These facts do not prove the blanking cause.</Forms.FormText>
         <Forms.FormText>Camera: {s.camera.value} — {s.camera.reason}. {s.camera.scope}. Last sample: {s.camera.at ? new Date(s.camera.at).toLocaleTimeString() : "none"}.</Forms.FormText>
@@ -161,8 +165,8 @@ function Panel() {
             <Button onClick={() => { settings.store.idle = !settings.store.idle; configure(); }}>Automatic Idle: {settings.store.idle ? "On" : "Off"}</Button>
             <Button onClick={() => { settings.store.camera = !settings.store.camera; configure(); }}>Webcam DND: {settings.store.camera ? "On" : "Off"}</Button>
             <Button onClick={() => engine?.resume()}>Resume paused rules</Button>
-            <Button onClick={() => void Native.exportHistory().then(ok => setMessage(ok ? "Export saved locally." : "Export cancelled.")).catch(() => setMessage("Export failed; existing files are never overwritten."))}>Export JSON</Button>
-            <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) { historyGeneration++; void clearHistoryView(historyView, () => persistenceHealth.run("history_clear", () => Native.clearHistory()), loadHistory).catch(() => setMessage("History could not be cleared. Reloaded saved events where readable; current events retained.")); } }}>Clear history</Button>
+            <Button onClick={() => void persistenceHealth.run("history_write", () => historyWriter.flush()).then(() => Native.exportHistory()).then(ok => setMessage(ok ? "Export saved locally." : "Export cancelled.")).catch(() => setMessage("Export failed; check local storage health."))}>Export JSON</Button>
+            <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) { historyGeneration++; void clearHistoryView(historyView, () => historyWriter.clear(() => persistenceHealth.run("history_clear", () => Native.clearHistory())), loadHistory).catch(() => setMessage("History could not be cleared. Reloaded saved events where readable; current events retained.")); } }}>Clear history</Button>
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>

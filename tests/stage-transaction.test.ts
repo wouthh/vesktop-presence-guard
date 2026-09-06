@@ -79,3 +79,16 @@ test("a killed staging-journal writer leaves the original usable and retryable",
     assert.deepEqual(fs.readdirSync(join(f.vc, "src/userplugins")), ["presenceGuard"]);
     const retry = stage(f.project, f.vc); verifyStaged(f.project, retry.destination, retry.commit);
 });
+for (const parent of ["src", "src/userplugins"]) test(`staging rejects a symlinked ${parent} parent without touching its target`, t => {
+    const f = fixture(t), target = join(f.root, "unrelated"), path = join(f.vc, parent);
+    fs.mkdirSync(target); fs.writeFileSync(join(target, "private.txt"), "synthetic unrelated content");
+    fs.renameSync(path, join(f.root, "preserved-parent")); fs.symlinkSync(target, path);
+    for (const dry of [true, false]) assert.throws(() => stage(f.project, f.vc, dry), /unsafe_staging_parent/);
+    assert.deepEqual(fs.readdirSync(target), ["private.txt"]); assert.equal(fs.readFileSync(join(target, "private.txt"), "utf8"), "synthetic unrelated content");
+});
+test("a parent replaced during preparation is rechecked before publication", t => {
+    const f = fixture(t), target = join(f.root, "unrelated"), parent = join(f.vc, "src/userplugins"); fs.mkdirSync(target);
+    const io = { ...fs, cpSync: (...args: any[]) => { (fs.cpSync as any)(...args); fs.renameSync(parent, join(f.root, "preserved-parent")); fs.symlinkSync(target, parent); } };
+    assert.throws(() => stage(f.project, f.vc, false, io), /unsafe_staging_parent/);
+    assert.deepEqual(fs.readdirSync(target), []); assert.deepEqual(inventory(join(f.root, "preserved-parent/presenceGuard")), f.before);
+});

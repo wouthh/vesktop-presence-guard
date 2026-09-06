@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
@@ -27,4 +27,8 @@ test("actual prepare CLI holds both locks during its maintained-updater build", 
     execFileSync(process.execPath, [resolve("scripts/install.mjs"), "prepare", "--config", config], { timeout: 15000, stdio: "pipe" });
     assert.equal(readFileSync(join(root, "build-evidence"), "utf8"), "both locks held");
     assert.equal(readFileSync(join(root, "src/userplugins/Existing/index.ts"), "utf8"), "// synthetic existing plugin");
+    const publication = join(c.ledger, "baseline.sha256.publication");
+    writeFileSync(publication, "{", { mode: 0o600 });
+    assert.throws(() => execFileSync(process.execPath, [resolve("scripts/install.mjs"), "prepare", "--dry-run", "--config", config], { timeout: 5000, stdio: "pipe" }), /baseline_publication_recovery_required/);
+    assert.equal(readFileSync(publication, "utf8"), "{"); assert.equal(existsSync(join(root, ".presence-guard")), false);
 });

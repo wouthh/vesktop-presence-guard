@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { hash, inventory, stage, verifyStaged } from "./staging.mjs";
 import { regularBytes, descriptorBytes } from "./regular-file.mjs";
 import { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
@@ -43,7 +44,7 @@ export function inspect(c) {
     const settings = read(join(c.mainProfile, "settings/settings.json"));
     const marker = join(c.vencordRoot, "src/userplugins/presenceGuard/.presence-guard-stage.json");
     const pending = pendingIntegration(c);
-    return { integrationRecovery: pending ? { kind: pending.kind, commit: pending.commit } : null, running: processes(), activeBuild: realpathSync(join(c.vencordRoot, "dist")), plugin: settings.plugins?.PresenceGuard ?? null, stagedCommit: existsSync(marker) ? read(marker).commit : null, existingSources: readdirSync(join(c.vencordRoot, "src/userplugins")).sort() };
+    return { baselineRecovery: Boolean(statOrNull(join(c.ledger, "baseline.sha256.publication"))), integrationRecovery: pending ? { kind: pending.kind, commit: pending.commit } : null, running: processes(), activeBuild: realpathSync(join(c.vencordRoot, "dist")), plugin: settings.plugins?.PresenceGuard ?? null, stagedCommit: existsSync(marker) ? read(marker).commit : null, existingSources: readdirSync(join(c.vencordRoot, "src/userplugins")).sort() };
 }
 function verifyCandidate(c) {
     const root = join(c.vencordRoot, "src/userplugins/presenceGuard");
@@ -66,8 +67,8 @@ export function restoreMain(current, before) {
     else delete next.plugins.PresenceGuard;
     return next;
 }
-export function verifyWiring(c) {
-    const rolledBack = rollbackRecord(c);
+export function verifyWiring(c, recoverPublication = true) {
+    const rolledBack = rollbackRecord(c, recoverPublication);
     for (const [key, backup, receipt] of [["mainLauncher", "main-launcher", "installed-launcher.sha256"], ["updater", "updater", "installed-updater.sha256"]]) {
         const record = join(c.ledger, receipt);
         if (key === "updater" && !existsSync(record)) throw Error("required_updater_receipt_missing");
@@ -76,7 +77,7 @@ export function verifyWiring(c) {
         if (!/^[a-f0-9]{64}$/.test(expected) || hash(regularBytes(c[key])) !== expected) throw Error(`${key}_drift`);
     }
     let modes;
-    if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json")) || statOrNull(join(c.ledger, "baseline.sha256.publication"))) modes = pinBaseline(c).modes;
+    if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json")) || statOrNull(join(c.ledger, "baseline.sha256.publication"))) modes = pinBaseline(c, recoverPublication).modes;
     else { backupHashes(c); modes = originalModes(c); }
     for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o7777) !== mode) throw Error(`${key}_mode_drift`);
     return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
@@ -129,12 +130,12 @@ function readSettings(c) {
     return value;
 }
 export function planSettings(c) { return enableMain(readSettings(c), Boolean(c.ledger && existsSync(join(c.ledger, "installed.json")) && !existsSync(join(c.ledger, "rolled-back.json")))); }
-export function rollbackRecord(c) {
+export function rollbackRecord(c, recoverPublication = true) {
     const path = join(c.ledger, "rolled-back.json");
     if (!statOrNull(path)) return null;
     writableTarget(path);
     const record = read(path);
-    if (record?.dist !== pinBaseline(c).dist || typeof record.at !== "string" || !Number.isFinite(Date.parse(record.at))) throw Error("rollback_receipt_drift");
+    if (record?.dist !== pinBaseline(c, recoverPublication).dist || typeof record.at !== "string" || !Number.isFinite(Date.parse(record.at))) throw Error("rollback_receipt_drift");
     return record;
 }
 export function preflightRollback(c) {
@@ -149,7 +150,7 @@ export function verifyCompletedRollback(c, currentSettings, baseline) {
     const record = rollbackRecord(c);
     if (!record || record.dist !== baseline.dist) throw Error("rollback_receipt_drift");
     const before = read(join(c.ledger, "backups/main-plugins"));
-    if (Object.hasOwn(currentSettings.plugins, "PresenceGuard") !== Object.hasOwn(before.plugins, "PresenceGuard") || JSON.stringify(currentSettings.plugins.PresenceGuard) !== JSON.stringify(before.plugins.PresenceGuard)) throw Error("rollback_settings_drift");
+    if (Object.hasOwn(currentSettings.plugins, "PresenceGuard") !== Object.hasOwn(before.plugins, "PresenceGuard") || !isDeepStrictEqual(currentSettings.plugins.PresenceGuard, before.plugins.PresenceGuard)) throw Error("rollback_settings_drift");
     const lease = read(join(c.mainProfile, "PresenceGuard/lease.json"));
     if (lease?.enabled !== false || !Number.isFinite(lease.at)) throw Error("rollback_lease_drift");
 }
@@ -157,12 +158,13 @@ export function restoreExecutables(c, baseline) {
     atomic(c.mainLauncher, regularBytes(join(c.ledger, "backups/main-launcher")), baseline.modes["main-launcher"]);
     atomic(c.updater, regularBytes(join(c.ledger, "backups/updater")), baseline.modes.updater);
 }
-export function pinBaseline(c) {
+export function pinBaseline(c, recoverPublication = true) {
     const root = join(c.vencordRoot, ".presence-guard"), path = join(root, "baseline.json");
     const anchor = join(c.ledger, "baseline.sha256");
     writableTarget(anchor, true);
     if (!existsSync(path) && existsSync(join(c.ledger, "installed.json"))) throw Error("installed_baseline_missing");
-    mkdirSync(root, { recursive: true, mode: 0o700 });
+    if (!recoverPublication && statOrNull(`${anchor}.publication`)) throw Error("baseline_publication_recovery_required");
+    if (recoverPublication) mkdirSync(root, { recursive: true, mode: 0o700 });
     writableTarget(path, true);
     const initial = () => {
         const dist = realpathSync(join(c.vencordRoot, "dist"));
@@ -172,8 +174,12 @@ export function pinBaseline(c) {
     const validateInitial = candidate => {
         if (existsSync(join(c.ledger, "installed.json")) || JSON.stringify(candidate) !== JSON.stringify(initial())) throw Error("initial_baseline_state_changed");
     };
-    if (statOrNull(`${anchor}.publication`)) publishBaseline(path, anchor, undefined, validateInitial);
+    if (statOrNull(`${anchor}.publication`)) {
+        if (!recoverPublication) throw Error("baseline_publication_recovery_required");
+        publishBaseline(path, anchor, undefined, validateInitial);
+    }
     if (!existsSync(path)) {
+        if (!recoverPublication) throw Error("baseline_initialization_required");
         if (existsSync(anchor)) throw Error("baseline_manifest_missing");
         publishBaseline(path, anchor, JSON.stringify(initial()), validateInitial);
     }
@@ -260,7 +266,7 @@ export async function main(args) {
     if (action === "stage") { if (!dry && !locked) return underLock(); return console.log(JSON.stringify(lockedStage(project, c.vencordRoot, dry), null, 2)); }
     if (action === "prepare") {
         if (!dry && !locked) return underLock();
-        verifyWiring(c); // Authenticate the executable and mode before staging or running it.
+        verifyWiring(c, !dry); // Authenticate the executable and mode before staging or running it.
         if (dry) return console.log(JSON.stringify(lockedStage(project, c.vencordRoot, true)));
         if (!holdsUpdaterLock(stageLock(c.vencordRoot))) throw Error("preparation_stage_lock_not_held");
         console.log(JSON.stringify(stage(project, c.vencordRoot)));
@@ -270,7 +276,7 @@ export async function main(args) {
     if (dry) {
         const recovery = pendingIntegration(c);
         if (recovery) return console.log(JSON.stringify({ action, recovery: { kind: recovery.kind, commit: recovery.commit }, message: "Repeat the interrupted action while both profiles are closed; rollback can cancel an unactivated install." }));
-        if (action === "install" || action === "update") { verifyWiring(c); planSettings(c); planHelper(c); candidateDist(c, verifyCandidate(c).commit); }
+        if (action === "install" || action === "update") { verifyWiring(c, false); planSettings(c); planHelper(c); candidateDist(c, verifyCandidate(c).commit); }
         return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper launcher", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
     }
     if (processes().length) throw Error("vesktop_running_close_identified_profiles_gracefully_after_call_capture_preflight");

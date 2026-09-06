@@ -22,7 +22,9 @@ test("production native history preserves display facts and strips unknown field
     const signal = { at: Date.now(), value: "unknown", reason: "ambiguous", scope: "synthetic" };
     const event = { at: Date.now(), kind: "observation", source: "unknown", previous: "online", status: "idle", configured: "online", aggregate: "unknown", reason: "synthetic observation", owned: false, display: { ...signal, facts: { ...facts, session: "must not persist" } }, camera: signal };
     await module.exports.appendHistory(undefined, event);
+    await module.exports.appendHistory(undefined, event); // Retry after a lost acknowledgment.
     const stored = JSON.parse(JSON.stringify(await module.exports.readHistory(undefined)));
+    assert.equal(stored.length, 1);
     assert.deepEqual(stored[0].display.facts, facts); assert.equal(stored[0].configured, "online");
     assert(!readFileSync(join(root, "PresenceGuard/history.json"), "utf8").includes("must not persist"));
     await assert.rejects(module.exports.appendHistory(undefined, { ...event, display: { ...signal, facts: { ...facts, power: 9 } } }), /invalid_history_event/);

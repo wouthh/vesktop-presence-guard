@@ -6,6 +6,7 @@ import { accessSync, constants, existsSync, lstatSync, readdirSync } from "node:
 import { dirname, join, resolve } from "node:path";
 import { regularBytes } from "./regular-file.mjs";
 import { recoverStage, replaceStage } from "./stage-transaction.mjs";
+import { assertStagingParents } from "./staging-paths.mjs";
 export const UPSTREAM = "0e40e433d7aa9168f656aba733d01e761b7ca8ca";
 export const hash = value => createHash("sha256").update(value).digest("hex");
 export function inventory(root) {
@@ -43,6 +44,7 @@ export function stage(project, vencord, dryRun = false, io = fs) {
     // Resolve only the Git directory: --git-path canonicalizes a symlink at the receipt itself.
     const receiptPath = join(gitDirectory, "presence-guard-stage.json");
     const destination = join(resolve(vencord), "src/userplugins/presenceGuard");
+    assertStagingParents(destination);
     recoverStage(destination, receiptPath, inventory, dryRun, io);
     const commit = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const source = join(project, "src"), files = inventory(source);

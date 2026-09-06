@@ -82,7 +82,7 @@ test("verified rollback artifacts support reinstall using the original ledger", 
     const launcher = "#!/bin/sh\nexec mullvad-exclude flatpak run dev.vencord.Vesktop\n";
     writeFileSync(c.mainLauncher, launcher); writeFileSync(join(c.ledger, "backups/main-launcher"), launcher);
     writeFileSync(c.updater, "reviewed extension"); writeFileSync(join(c.ledger, "backups/updater"), "original updater");
-    writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: {} }));
+    writeFileSync(join(c.ledger, "backups/main-plugins"), JSON.stringify({ plugins: { PresenceGuard: { enabled: false, idle: false, camera: false } } }));
     writeFileSync(join(c.ledger, "backups/executable-modes.json"), JSON.stringify({ "main-launcher": 0o755, updater: 0o700 }));
     chmodSync(c.mainLauncher, 0o755); chmodSync(c.updater, 0o700);
     const baseline = pinBaseline(c);
@@ -98,7 +98,7 @@ test("verified rollback artifacts support reinstall using the original ledger", 
     assert.equal(readFileSync(join(root, ".presence-guard/display-helper.mjs"), "utf8"), "verified helper");
     const current = JSON.parse(readFileSync(join(c.mainProfile, "settings/settings.json"), "utf8"));
     assert.throws(() => verifyCompletedRollback(c, current, baseline), /rollback_settings_drift/);
-    delete current.plugins.PresenceGuard;
+    current.plugins.PresenceGuard = { camera: false, idle: false, enabled: false }; // Equivalent reordered JSON.
     const lease = join(native, "lease.json"); writeFileSync(lease, JSON.stringify({ enabled: false, at: 0 }));
     verifyCompletedRollback(c, current, baseline);
     writeFileSync(lease, JSON.stringify({ enabled: true, at: 0 })); assert.throws(() => verifyCompletedRollback(c, current, baseline), /rollback_lease_drift/);

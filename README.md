@@ -37,6 +37,12 @@ Failures remain visible until the corresponding operation succeeds. Diagnostic
 write failures do not invalidate otherwise healthy detector observations. Native
 JSON reads reject non-regular files without waiting on a FIFO.
 
+Transient history-write failures retain recent pending events in memory and retry
+on subsequent events or the existing two-second poll. The panel shows storage
+health and the pending count; export waits for those events to be saved. Pending
+events share the 500-event/seven-day limit and cannot survive process exit while
+storage remains unavailable. Successful clear cancels older pending events.
+
 ## Status safety
 
 Automation starts only from positively confirmed configured **and** effective

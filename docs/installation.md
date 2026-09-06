@@ -175,8 +175,8 @@ beside the Vencord directory (`.presence-guard-stage.lock` suffix). The integrat
 check holds it through validation/build; preparation holds it continuously through
 staging and the maintained-updater build, together with the updater lock. This prevents competing checks from recovering a live transaction.
 
-Staging journals are also published atomically. Temporary source generations
-stay in Git metadata, outside the plugin inventory; the Git directory and checkout
+Staging journals are also published atomically. Staging also rejects symlinked parent directories before preparation and
+publication. Temporary source generations stay in Git metadata, outside the plugin inventory; the Git directory and checkout
 must share a filesystem for atomic renames. An interrupted pre-publication copy
 may leave an isolated temporary generation for inspection, but cannot replace
 the existing plugin or poison the next build's plugin list.
@@ -184,7 +184,8 @@ the existing plugin or poison the next build's plugin list.
 First-time baseline publication records a recoverable manifest/anchor pair in
 the private ledger before publishing either output. Recovery requires the
 recorded original release to remain active and its files and backups to match.
-An unjournaled missing or mismatched anchor remains an error. Repeated rollback
+An unjournaled missing or mismatched anchor remains an error. Inspection reports
+a pending initial publication, and dry runs refuse recovery without writing files. Repeated rollback
 validates its receipt, original PresenceGuard entry and disabled lease as well as
 the build and executables; later drift is preserved and reported.
 

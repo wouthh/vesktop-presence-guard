@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { regularBytes } from "./regular-file.mjs";
+import { assertStagingParents } from "./staging-paths.mjs";
 
 const present = path => { try { return fs.lstatSync(path); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -21,6 +22,7 @@ const paths = (_destination, receipt, id) => ({ next: join(dirname(receipt), `.p
 // Called only under the staging/updater lock. Recovery validates all generations
 // before removing any generated tree; unexplained drift remains untouched.
 export function recoverStage(destination, receipt, inventory, dry = false, io = fs) {
+    assertStagingParents(destination);
     const journal = `${receipt}.transaction`;
     if (!present(journal)) return;
     if (dry) throw Error("staging_recovery_required_run_stage");
@@ -44,6 +46,7 @@ export function recoverStage(destination, receipt, inventory, dry = false, io = 
         if (trees.current && !equal(trees.current, tx.nextFiles)) throw Error("staging_recovery_current_drift");
     } else if (!committed && !equal(trees.current, tx.previousFiles) && !(tx.previousFiles === null && equal(trees.current, tx.nextFiles))) throw Error("staging_recovery_original_missing");
     // All paths and contents are checked before the first recovery mutation.
+    assertStagingParents(destination);
     if (!committed && trees.previous) {
         if (trees.current) io.rmSync(destination, { recursive: true });
         io.renameSync(p.previous, destination);
@@ -56,13 +59,16 @@ export function recoverStage(destination, receipt, inventory, dry = false, io = 
 
 export function replaceStage(destination, receipt, inventory, build, expected, io = fs) {
     const id = randomUUID(), p = paths(destination, receipt, id);
+    assertStagingParents(destination);
     io.mkdirSync(dirname(destination), { recursive: true });
+    assertStagingParents(destination);
     if (fs.statSync(dirname(destination)).dev !== fs.statSync(dirname(receipt)).dev) throw Error("staging_requires_same_filesystem_git_metadata");
     io.mkdirSync(p.next, { mode: 0o700 });
     let journalReady = false;
     let journalImageReady = false;
     try {
         const nextReceipt = build(p.next);
+        assertStagingParents(destination);
         const nextFiles = inventory(p.next);
         const directories = new Set([p.next]);
         for (const file of Object.keys(nextFiles)) {
@@ -73,12 +79,14 @@ export function replaceStage(destination, receipt, inventory, build, expected, i
         }
         for (const directory of [...directories].sort((a, b) => b.length - a.length)) syncDirectory(directory, io);
         durableFile(p.receiptNext, nextReceipt, io); syncDirectory(dirname(receipt), io); syncDirectory(dirname(destination), io);
+        assertStagingParents(destination);
         const previousFiles = present(destination) ? inventory(destination) : null;
         const previousReceipt = present(receipt) ? regularBytes(receipt, "utf8") : null;
         if (!equal(previousFiles, expected.files) || previousReceipt !== expected.receipt) throw Error("staging_changed_during_preparation");
         durableFile(p.journalNext, JSON.stringify({ version: 1, id, nextFiles, previousFiles, nextReceipt, previousReceipt }), io); journalImageReady = true;
         io.renameSync(p.journalNext, p.journal);
         syncDirectory(dirname(receipt), io); journalReady = true;
+        assertStagingParents(destination);
         if (previousFiles) { io.renameSync(destination, p.previous); syncDirectory(dirname(destination), io); syncDirectory(dirname(receipt), io); }
         io.renameSync(p.next, destination); syncDirectory(dirname(destination), io); syncDirectory(dirname(receipt), io);
         io.renameSync(p.receiptNext, receipt); syncDirectory(dirname(receipt), io);
