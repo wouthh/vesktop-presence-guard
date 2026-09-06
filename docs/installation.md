@@ -200,3 +200,21 @@ logind's automatic session lookup selects the current user's active Wayland user
 session. Provider/session changes invalidate continuity. See the upstream
 [screen-shield D-Bus adapter](https://raw.githubusercontent.com/GNOME/gnome-shell/50.4/js/ui/shellDBus.js)
 and [lock-hint implementation](https://raw.githubusercontent.com/GNOME/gnome-shell/50.4/js/ui/screenShield.js).
+
+### Maintained-updater activation handoff
+
+Activation requires the reviewed updater to implement the `PresenceGuard bound
+pending v1` contract. The installer passes an anonymous read-only snapshot of the
+verified pending JSON on FD 5, with its SHA-256, original pending path and expected
+release in `PRESENCE_GUARD_PENDING_*` / `PRESENCE_GUARD_EXPECTED_RELEASE`. The updater
+must validate that identity and use the snapshot for all activation reads; it must
+preserve an unexpectedly changed original pending file. FD 4 remains the held
+updater lock. An older updater without the contract marker is rejected. Rebuilds
+do not receive pending activation input. The local descriptor's authenticated
+updater receipt must match the implementation before preparation or installation.
+
+Integration recovery records every existing parent directory's device/inode
+identity and rejects changed ancestors, including byte-identical replacement
+profiles and ancestor symlinks. These drift checks assume cooperating local
+maintenance under the existing lock; they are not an isolation boundary against
+another process with the same user's authority.

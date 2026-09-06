@@ -21,7 +21,7 @@ export function compileHelper(project, commit) {
                 writeFileSync(path, execFileSync("git", ["-C", project, "cat-file", "blob", match[1]], { maxBuffer: 1024 * 1024 }), { mode: 0o600, flag: "wx" });
             }
         }
-        const build = buildSync({ metafile: true, absWorkingDir: snapshot ?? project, entryPoints: [join(snapshot ?? project, "helper/display-helper.ts")], bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", external: ["gi://Gio", "gi://GLib", "gi://GLibUnix"] });
+        const build = buildSync({ metafile: true, absWorkingDir: snapshot ?? project, entryPoints: [join(snapshot ?? project, "helper/display-helper.ts")], bundle: true, write: false, format: "esm", platform: "neutral", target: "es2022", external: ["gi://Gio", "gi://GioUnix", "gi://GLib", "gi://GLibUnix"] });
         if (snapshot && Object.keys(build.metafile.inputs).some(path => !authenticated.has(path))) throw Error("unauthenticated_helper_dependency");
         return Buffer.from(build.outputFiles[0].contents);
     } finally { if (snapshot) rmSync(snapshot, { recursive: true }); }

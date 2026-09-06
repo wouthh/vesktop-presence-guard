@@ -130,3 +130,16 @@ test("transaction state refuses newly added special permission bits", t => {
     assert.equal(fs.statSync(f.c.mainLauncher).mode & 0o7777, 0o1700);
     assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
 });
+
+for (const kind of ["install", "rollback"]) for (const replacement of ["symlink", "directory"]) test(`${kind} recovery rejects a replaced profile ancestor with matching files (${replacement})`, t => {
+    const f = fixture(t, kind), tx = f.prepare(), original = f.c.mainProfile + ".original", copy = f.c.mainProfile + ".copy";
+    fs.renameSync(f.c.mainProfile, original);
+    fs.cpSync(original, copy, { recursive: true, preserveTimestamps: true });
+    if (replacement === "symlink") fs.symlinkSync(copy, f.c.mainProfile);
+    else fs.renameSync(copy, f.c.mainProfile);
+    assert.throws(() => pendingIntegration(f.c), /parent_drift/);
+    assert.throws(() => finishIntegration(f.c, tx, () => { throw Error("must_not_activate"); }), /parent_drift/);
+    assert.equal(fs.readFileSync(join(f.c.mainProfile, "settings/settings.json"), "utf8"), '{"unchanged":true}');
+    assert.equal(fs.readFileSync(join(original, "settings/settings.json"), "utf8"), '{"unchanged":true}');
+    assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
+});

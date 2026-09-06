@@ -2,20 +2,13 @@
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import GLibUnix from "gi://GLibUnix";
+import { readHelperInput as read } from "./read-input";
 import { loginSession } from "./login-session";
 import { leaseActive, releaseMonitoring, startIdentity } from "./lifetime";
 // Fixed installation paths are provided by an owner-only launcher, never the renderer.
 const [parentText, parentStart, snapshotPath, leasePath] = ARGV;
 if (!/^\d+$/.test(parentText ?? "") || !/^\d+$/.test(parentStart ?? "") || !snapshotPath?.startsWith("/") || !leasePath?.startsWith("/")) throw Error("invalid_helper_arguments");
 const loop = new GLib.MainLoop(null, false);
-const decoder = new TextDecoder();
-function read(path: string) {
-    const info = Gio.File.new_for_path(path).query_info("standard::type,standard::size", Gio.FileQueryInfoFlags.NOFOLLOW_SYMLINKS, null);
-    if (info.get_file_type() !== Gio.FileType.REGULAR || info.get_size() > 65536) throw Error("unsafe_helper_input");
-    const [ok, bytes] = GLib.file_get_contents(path);
-    if (!ok || bytes.length > 65536) throw Error("bounded_read_failed");
-    return decoder.decode(bytes);
-}
 function identity() {
     try { const s = read(`/proc/${parentText}/stat`); return startIdentity(s) === parentStart; } catch { return false; }
 }

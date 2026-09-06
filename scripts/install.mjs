@@ -9,6 +9,7 @@ import { regularBytes, descriptorBytes } from "./regular-file.mjs";
 import { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
 import { lockedStage, stageLock } from "./locked-stage.mjs";
 import { finishIntegration, pendingIntegration, prepareIntegration, snapshotIntegrationTargets } from "./integration-transaction.mjs";
+import { pendingSnapshot } from "./pending-snapshot.mjs";
 import { compileHelper } from "./helper-build.mjs";
 import { publishBaseline } from "./baseline-publication.mjs";
 
@@ -83,19 +84,29 @@ export function verifyWiring(c, recoverPublication = true) {
     return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
 }
 export { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
-export function runUpdater(c, action, execute = execFileSync) {
+export function runUpdater(c, action, execute = execFileSync, expectedDist) {
     if (!["rebuild", "activate"].includes(action)) throw Error("unsupported_updater_action");
     const lock = updaterLockDescriptor(c.updaterLock);
     if (lock === undefined) throw Error("updater_lock_not_held");
     const wiring = verifyWiring(c);
     const fd = openSync(c.updater, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let snapshot;
     try {
         const expected = regularBytes(join(c.ledger, "installed-updater.sha256"), "utf8", 128).trim();
         if (hash(descriptorBytes(fd)) !== expected || (fstatSync(fd).mode & 0o7777) !== wiring.updaterMode) throw Error("updater_descriptor_drift");
         // Linux preserves these inherited descriptors through the script's shebang.
         // The reviewed updater validates FD 4 against its lock before accepting it.
-        return execute("/proc/self/fd/3", [action], { stdio: ["inherit", "inherit", "inherit", fd, Number(lock)], env: { ...process.env, PRESENCE_GUARD_LOCK_FD: "4" } });
-    } finally { closeSync(fd); }
+        const stdio = ["inherit", "inherit", "inherit", fd, Number(lock)];
+        const env = { ...process.env, PRESENCE_GUARD_LOCK_FD: "4" };
+        for (const key of ["PRESENCE_GUARD_PENDING_FD", "PRESENCE_GUARD_PENDING_SHA256", "PRESENCE_GUARD_PENDING_PATH", "PRESENCE_GUARD_EXPECTED_RELEASE"]) delete env[key];
+        if (action === "activate") {
+            if (!descriptorBytes(fd, "utf8").includes("# PresenceGuard bound pending v1")) throw Error("updater_pending_handoff_unsupported");
+            snapshot = pendingSnapshot(c, expectedDist);
+            stdio.push(snapshot.fd);
+            Object.assign(env, { PRESENCE_GUARD_PENDING_FD: "5", PRESENCE_GUARD_PENDING_SHA256: snapshot.hash, PRESENCE_GUARD_PENDING_PATH: c.updaterPending, PRESENCE_GUARD_EXPECTED_RELEASE: dirname(expectedDist) });
+        }
+        return execute("/proc/self/fd/3", [action], { stdio, env });
+    } finally { snapshot?.close(); closeSync(fd); }
 }
 function backupHashes(c) {
     const result = {};
@@ -286,7 +297,7 @@ export async function main(args) {
         const undo = action === "rollback" || action === "uninstall";
         const result = finishIntegration(c, pending, expected => {
             if (candidateDist(c, pending.commit) !== expected) throw Error("recovery_candidate_changed");
-            runUpdater(c, "activate");
+            runUpdater(c, "activate", undefined, expected);
         }, undo);
         if (!undo && pending.kind === "rollback") throw Error("rollback_recovered_reapply_updater_before_installation");
         if (!undo && pending.commit !== execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()) throw Error("recovered_older_installation_prepare_current_head");
@@ -314,10 +325,10 @@ export async function main(args) {
         if (!existsSync(plan.configPath) || rolledBack) changes.push({ key: "helperConfig", data: JSON.stringify({ version: 1, snapshot: join(plan.root, "display.json"), welcome: true }) });
         if (rolledBack) changes.push({ key: "rolledBack", data: null });
         changes.push({ key: "installed", data: JSON.stringify(receipt, null, 2) });
-        const tx = prepareIntegration(c, "install", manifest.commit, active, changes.map(change => ({ ...change, expectedBefore: preflight[change.key] })));
+        const tx = prepareIntegration(c, "install", manifest.commit, active, changes.map(change => ({ ...change, expectedBefore: preflight[change.key], expectedParents: preflight.parents })));
         finishIntegration(c, tx, expected => {
             if (candidateDist(c, manifest.commit) !== expected) throw Error("activation_candidate_changed");
-            runUpdater(c, "activate");
+            runUpdater(c, "activate", undefined, expected);
         });
         console.log(JSON.stringify(receipt, null, 2)); return;
     }
@@ -343,7 +354,7 @@ export async function main(args) {
         { key: "lease", data: JSON.stringify({ enabled: false, at: Date.now() }) },
         { key: "updater", data: regularBytes(join(c.ledger, "backups/updater")), mode: baseline.modes.updater },
         { key: "rolledBack", data: JSON.stringify({ at: new Date().toISOString(), dist: baseline.dist }) }
-    ].map(change => ({ ...change, expectedBefore: preflight[change.key] })));
+    ].map(change => ({ ...change, expectedBefore: preflight[change.key], expectedParents: preflight.parents })));
     finishIntegration(c, tx, () => { throw Error("rollback_does_not_execute_updater"); });
     console.log("Previous integration restored; local history and unrelated settings retained. Relaunch the previous profiles normally.");
 }

@@ -25,7 +25,31 @@ function state(path) {
     if (stat && stat.mode & 0o7000) throw Error("unexpected_special_permission_bits");
     return stat ? { hash: hash(regularBytes(path)), mode: stat.mode & 0o7777 } : null;
 }
-export const snapshotIntegrationTargets = c => Object.fromEntries(Object.entries(integrationPaths(c)).map(([key, path]) => [key, state(path)]));
+function parentChain(paths) {
+    const result = {};
+    for (const file of paths) {
+        const parents = [];
+        for (let path = dirname(file); ; path = dirname(path)) { parents.unshift(path); if (dirname(path) === path) break; }
+        for (const path of parents) {
+            const stat = present(path);
+            if (!stat) break;
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw Error("unsafe_integration_parent");
+            result[path] = { dev: stat.dev, ino: stat.ino };
+        }
+    }
+    return result;
+}
+function validateParents(parents) {
+    if (!parents || typeof parents !== "object" || !Object.keys(parents).length) throw Error("integration_parent_identity_missing");
+    for (const [path, expected] of Object.entries(parents)) {
+        const stat = present(path);
+        if (!stat?.isDirectory() || stat.isSymbolicLink() || !same({ dev: stat.dev, ino: stat.ino }, expected)) throw Error("integration_parent_drift");
+    }
+}
+export const snapshotIntegrationTargets = c => ({
+    ...Object.fromEntries(Object.entries(integrationPaths(c)).map(([key, path]) => [key, state(path)])),
+    parents: parentChain(Object.values(integrationPaths(c)))
+});
 function retained(c, path) {
     const root = fs.realpathSync(join(c.vencordRoot, ".wout-releases"));
     if (typeof path !== "string" || dirname(dirname(path)) !== root || basename(path) !== "dist" || fs.realpathSync(path) !== path) throw Error("transaction_release_outside_retained_root");
@@ -48,12 +72,15 @@ export function pendingIntegration(c) {
         if (!Object.hasOwn(paths, file.key)) throw Error("invalid_integration_target");
         for (const s of [file.before, file.after]) if (s !== null && (!s || !/^[a-f0-9]{64}$/.test(s.hash) || !Number.isInteger(s.mode) || s.mode < 0 || s.mode > 0o777)) throw Error("invalid_integration_file_state");
     }
+    validateParents(tx.parents);
     return tx;
 }
 export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs) {
     if (present(journalPath(c))) throw Error("integration_recovery_required");
     if (!["install", "rollback"].includes(kind) || !/^[a-f0-9]{40}$/.test(commit)) throw Error("invalid_integration_identity");
     const paths = integrationPaths(c), id = randomUUID(), created = [];
+    const initialParents = parentChain(Object.values(paths));
+    for (const change of changes) if (change.expectedParents) validateParents(change.expectedParents);
     const guards = Object.fromEntries((kind === "install" ? ["updater", "updaterReceipt"] : ["updaterReceipt"]).map(key => [key, state(paths[key])]));
     if (Object.values(guards).some(value => !value)) throw Error("integration_wiring_missing");
     const tx = { version: 1, kind, commit, id, descriptorHash: descriptorHash(c), guards, beforeDist: retained(c, fs.realpathSync(join(c.vencordRoot, "dist"))), afterDist: retained(c, afterDist), files: [] };
@@ -65,6 +92,8 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
             const path = paths[key], before = state(path);
             if (Object.hasOwn(change, "expectedBefore") && !same(before, change.expectedBefore)) throw Error("integration_preflight_target_drift");
             io.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+            validateParents(initialParents);
+            parentChain([path]);
             const parent = io.lstatSync(dirname(path));
             if (!parent.isDirectory() || parent.isSymbolicLink()) throw Error("unsafe_integration_parent");
             const after = data === null ? null : { hash: hash(data), mode };
@@ -76,6 +105,8 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
         }
         // Preparing images can take time: do not adopt edits made in the meantime.
         for (const file of tx.files) if (!same(state(paths[file.key]), file.before)) throw Error("integration_target_changed_during_preparation");
+        validateParents(initialParents);
+        tx.parents = parentChain(Object.values(paths));
         const journalImage = join(c.ledger, `.integration-transaction-${id}.new`);
         durable(journalImage, JSON.stringify(tx), 0o600, io); created.push(journalImage);
         io.renameSync(journalImage, journalPath(c)); created.pop(); syncDirectory(c.ledger, io);
@@ -87,6 +118,7 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
 }
 function validate(c, tx) {
     if (tx.descriptorHash !== descriptorHash(c)) throw Error("integration_descriptor_drift");
+    validateParents(tx.parents);
     for (const [key, expected] of Object.entries(tx.guards)) if (!same(state(integrationPaths(c)[key]), expected)) throw Error("integration_wiring_drift");
     if (!same(retained(c, tx.afterDist.path), tx.afterDist)) throw Error("integration_candidate_drift");
     const current = fs.realpathSync(join(c.vencordRoot, "dist"));
@@ -127,6 +159,7 @@ export function finishIntegration(c, tx, activate, cancelUnactivated = false, io
     if (fs.realpathSync(join(c.vencordRoot, "dist")) !== tx.afterDist.path) throw Error("integration_activation_mismatch");
     validate(c, tx);
     for (const file of tx.files) {
+        validateParents(tx.parents);
         const path = paths[file.key];
         if (!same(state(path), file.after)) {
             if (file.after === null) { if (present(path)) io.unlinkSync(path); }
