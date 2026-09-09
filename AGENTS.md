@@ -53,8 +53,11 @@ separately authorized. Public repository creation is authorized for this task.
 
 Use an explicit installation descriptor stored outside this repository. Never
 embed workstation paths in tracked files. Honor the existing updater's lock,
-source validation, retained-release activation and rollback. A call/capture or
-an uncertain restart preflight blocks restart, not independent build work.
+source validation, retained-release activation and rollback. Read
+[the delivery procedure](docs/installation.md) explicitly before delivery.
+Apply the owner's scoped restart authority recorded outside the repository;
+timing permission does not waive the required durable closed-client state,
+integrity checks, locks, pending-snapshot binding, or recovery guards.
 Compile installed helper code from the recorded Git tree. Serialize staging with
 the integration check; prepare durable file images before activation or rollback.
 Bind activation to the authenticated pending snapshot and expected release; reject

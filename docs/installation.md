@@ -86,27 +86,41 @@ launcher and updater receipts are mandatory for updates. A first install forces 
 and both rules off, even if a stale settings entry exists; verified updates keep
 the existing rule preferences.
 
-Immediately before restart, verify **neither profile has a call or capture**.
-If reliable client inspection is unavailable, obtain an explicit no-call/capture
-confirmation. Neither process presence nor idle audio proves it. Quit the two
-identified profiles gracefully using their normal Quit action, then run:
+Read the current task's restart authority from the owner-controlled private
+operating record associated with `PG_CONFIG`. If that authority explicitly permits
+restarting these mapped Vesktop profiles during calls or capture, do not impose a
+second timing-consent gate. Otherwise preserve the applicable timing restriction;
+process presence or idle audio does not prove that a call is absent. This document
+never grants restart authority on its own, and the JSON installer descriptor does
+not implement a restart-policy field.
+
+Prepare the verified combined candidate and retained rollback before stopping
+anything. Gracefully quit only the identified profiles through their supported
+Quit action and verify durable shutdown. The installer does not terminate them.
+Use targeted Flatpak termination only when the private host recipe has separately
+established its safe-stop conditions; never use broad process killing. Then run:
 
 ```sh
 node scripts/install.mjs install --config "$PG_CONFIG"
 ```
 
-The script refuses to mutate integration while any identified Vesktop main
-process is running. It pins and hashes the previous retained release, activates
+The script's process guard is global: it refuses to mutate integration while any
+Vesktop main process is running, including an instance outside the two mapped
+profiles. Close only the mapped profiles covered by the current task's restart
+authority. If an unrelated instance remains, defer this shared-host activation;
+the descriptor and this procedure do not authorize stopping it. Do not weaken the
+guard or broaden a process kill to make installation proceed.
+It pins and hashes the previous retained release, activates
 the validated candidate, verifies its plugin and commit identity, adds the
 process-bound helper to the existing main launcher, and enables main observation
-with both rules off. Alt settings stay unchanged. Relaunch both profiles through
+with both rules off. Alt settings stay unchanged. Relaunch only profiles that were running before the operation, through
 their existing launchers. The panel opens once. Verify the main profile's local
 `PresenceGuard/diagnostics.json`, `history.json`, and panel; check enabled state,
 commit, hooks, detector health, other plugins, and startup errors. These are
 private local diagnostics, never public artifacts.
 
 For later updates, pull/review changes normally, run `pnpm check`, commit them,
-run `prepare`, gracefully close both profiles after the same call/capture check,
+run `prepare`, gracefully close the mapped profiles under the same restart authority,
 and run `update` instead of `install`. Existing rule preferences are preserved.
 `inspect` and `--dry-run` do not activate, write settings, or terminate processes.
 Installation/update dry runs also check executable receipts and recorded modes.
@@ -121,7 +135,8 @@ Do not delete receipts to bypass a drift failure.
 
 ## Rollback or uninstall
 
-After the same call/capture preflight, gracefully close both profiles:
+After checking the same restart authority and durable-stop conditions, gracefully
+close the mapped profiles:
 
 ```sh
 node scripts/install.mjs rollback --config "$PG_CONFIG"
@@ -218,3 +233,48 @@ identity and rejects changed ancestors, including byte-identical replacement
 profiles and ancestor symlinks. These drift checks assume cooperating local
 maintenance under the existing lock; they are not an isolation boundary against
 another process with the same user's authority.
+
+
+## Delivery applicability and private receipts
+
+The canonical inputs are this repository's committed `src/`, `helper/`, scripts,
+lockfile and upstream pin. Generated staging, compiled helper, retained combined
+bundle and loaded profile are separate states. Ordinary documentation or test-only
+changes need no restaging or restart when the installed executable inputs already
+match the verified source. A merge SHA alone does not prove a runtime difference;
+compare the actual committed input files and existing staging/installation receipts.
+
+`package.json` owns the project version; installed plugin identity also records
+its exact source commit. Use the existing version convention for distributable
+changes, normally a patch for a compatible fix. Review any required version change
+before packaging, and preserve independent host, data and installer protocol
+versions. Do not invent an extra host-plugin version field or bump a product
+version solely to retry an installation or publish documentation.
+
+The host candidate must include the complete existing plugin inventory, current
+host pin, local patches and every unrelated local plugin. Coalesce compatible
+personal plugin updates into one validated retained build and one restart group.
+Keep the original PresenceGuard baseline and all newer verified updater-extension
+receipts. Never run an older pinned installer or rollback wrapper over a later
+plugin integration. An updater fingerprint mismatch requires reconciliation from
+the newer trusted receipt, not replacing the updater or editing its old receipt
+merely to make validation pass.
+
+Preserve each profile's current plugin enable state and settings. The current
+installation helper explicitly enables PresenceGuard in Main, including on update;
+do not invoke that settings-writing path for a disabled existing installation.
+Build and stage independently, then use a reviewed settings-preserving update path
+before activation when that case applies. It never authorizes enabling another
+plugin or an automatic rule. Keep profile data and settings outside build/test
+inputs and maintenance report copies; retain required canonical private rollback
+records in their established location.
+
+The private delivery receipt records reviewed/merged source, executable-input
+comparison, staged manifest, helper digest, full host/plugin inventory, candidate
+and rollback bundle hashes, target before/after state, prior running profiles,
+activation time and bounded runtime identity/health evidence. Verify loaded
+identity through supported local diagnostics without status writes, manufactured
+Discord traffic, or physical camera/display tests. Record installed-but-not-loaded
+and identity-unverified outcomes explicitly. A changed `dist` symlink alone proves
+neither profile loaded the new bundle. Keep all workstation paths and profile
+identifiers private; store no message content, credentials or personal history.
