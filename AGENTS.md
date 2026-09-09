@@ -16,6 +16,7 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Never acquire status ownership except from positively confirmed Online.
 - Manual selections, including the same value and duration edits, revoke
   ownership before asynchronous work. Unknown never means cleared.
+- Keep raw display facts distinct from inferred eligibility and status changes.
 - Ownership is process-local. Do not restore it from history or adopt native idle.
 - Observe only the signed-in account and local display/camera state. No media
   acquisition, telemetry, network control listener, or other-user tracking.
@@ -28,9 +29,11 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 
 ## Validation and delivery
 
-The implementation will establish `pnpm check` as the canonical gate: lint,
-types, deterministic tests, privacy scan, helper build, and pinned upstream
-plugin integration. Until first execution, these commands are unverified.
+`pnpm check` is the canonical gate: lint, types, deterministic tests, privacy
+scan, helper build, and pinned upstream plugin integration. `pnpm test` is the
+focused engine/detector/adapter gate. `pnpm exec tsx scripts/check-client.ts`
+with an explicit local public-client script checks patch compatibility without
+executing client code. Physical camera/display cycles require human smoke tests.
 
 Bootstrap `main`, then use a feature branch. Preserve dirty work; no reset,
 stash, rebase, amend, or force-push. Use normal commits and a ready PR after
@@ -52,6 +55,13 @@ Use an explicit installation descriptor stored outside this repository. Never
 embed workstation paths in tracked files. Honor the existing updater's lock,
 source validation, retained-release activation and rollback. A call/capture or
 an uncertain restart preflight blocks restart, not independent build work.
+Compile installed helper code from the recorded Git tree. Serialize staging with
+the integration check; prepare durable file images before activation or rollback.
+Bind activation to the authenticated pending snapshot and expected release; reject
+changed target-parent identities on recovery. Bind target images to file states
+captured before planning; restore staging trees
+by atomic rename before recursively removing discarded generations.
+Recover interrupted operations only after validating recorded before/after state.
 History survives uninstall by default. Stop helper collection when its lease
 ends and terminate it with its owning application process.
 
