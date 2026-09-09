@@ -104,8 +104,13 @@ established its safe-stop conditions; never use broad process killing. Then run:
 node scripts/install.mjs install --config "$PG_CONFIG"
 ```
 
-The script refuses to mutate integration while any identified Vesktop main
-process is running. It pins and hashes the previous retained release, activates
+The script's process guard is global: it refuses to mutate integration while any
+Vesktop main process is running, including an instance outside the two mapped
+profiles. Close only the mapped profiles covered by the current task's restart
+authority. If an unrelated instance remains, defer this shared-host activation;
+the descriptor and this procedure do not authorize stopping it. Do not weaken the
+guard or broaden a process kill to make installation proceed.
+It pins and hashes the previous retained release, activates
 the validated candidate, verifies its plugin and commit identity, adds the
 process-bound helper to the existing main launcher, and enables main observation
 with both rules off. Alt settings stay unchanged. Relaunch only profiles that were running before the operation, through
