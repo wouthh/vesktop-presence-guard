@@ -21,18 +21,19 @@ test("production helper enters its loop before quitting for an already-exited pa
 
 test("production helper re-reads sleep state after a resume signal missed without a lease", async () => {
     const source = buildSync({ entryPoints: ["helper/display-helper.ts"], bundle: true, write: false, format: "cjs", platform: "neutral", external: ["gi://Gio", "gi://GioUnix", "gi://GLib", "gi://GLibUnix"] }).outputFiles[0].text;
-    let enabled = true, sleeping = true, regularLease = true, snapshot: any, tick!: () => void;
+    let enabled = true, sleeping = true, regularLease = true, loginSessionUnavailable = false, snapshot: any, tick!: () => void;
     const idle: (() => void)[] = [], subscriptions = new Set<number>(); let next = 1;
     const descriptors = new Map<number, string>(); let nextFd = 10;
     class Variant { constructor(_type: string, public value: any) {} deepUnpack() { return this.value; } }
     const bus = {
         call: (_name: string, _path: string, _iface: string, method: string, params: Variant | null, _reply: unknown, _flags: unknown, _timeout: unknown, _cancel: unknown, callback: (bus: unknown, result: unknown) => void) => {
+            if (method === "GetAll" && loginSessionUnavailable) { queueMicrotask(() => callback(null, { failed: true })); return; }
             const value = method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: "synthetic-session" }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
                 : method === "GetCurrentState" ? [0, [], [[0, 0, 1, 0, false, ["synthetic"]]]]
                     : method === "GetActive" ? [false] : method === "GetNameOwner" ? ["synthetic-provider"] : [0];
             queueMicrotask(() => callback(null, { deepUnpack: () => value }));
         },
-        call_finish: (result: unknown) => result,
+        call_finish: (result: any) => { if (result.failed) throw Error("synthetic_login1_unavailable"); return result; },
         signal_subscribe: () => { const id = next++; subscriptions.add(id); return id; },
         signal_unsubscribe: (id: number) => subscriptions.delete(id)
     };
@@ -53,7 +54,10 @@ test("production helper re-reads sleep state after a resume signal missed withou
     await flush(); assert.equal(snapshot.observation.suspended, true);
     enabled = false; tick(); await flush(); assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive");
     sleeping = false; enabled = true; tick(); await flush();
-    assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 7);
+    assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 8); // Includes login1 owner continuity tracking.
+    loginSessionUnavailable = true; tick(); await flush();
+    assert.equal(snapshot.observation, null); assert.equal(snapshot.activity, null); assert.equal(snapshot.reason, "session_unavailable");
+    loginSessionUnavailable = false;
     regularLease = false; tick(); await flush();
     assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive"); assert.equal(descriptors.size, 0);
 });
