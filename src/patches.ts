@@ -20,6 +20,23 @@ export const protoPatch = {
         replace: "$1$self.generatedUpdate($3,$7);$6"
     }
 };
+export const saveLifecyclePatch = {
+    find: "async updateAsync(",
+    group: true,
+    replacement: [{
+        match: /markDirty\((\w+),(\w+)\)\{/,
+        replace: "markDirty($1,$2){$self.saveQueued(this,$1);"
+    }, {
+        match: /(persistChanges=async\(\)=>\{[\s\S]*?let\{editInfo:(\w+)\}=this\.getEditInfo\(\);if\(null==\2\.protoToSave\)return void [^;]+;)/,
+        replace: "$1const presenceGuardSave=$self.saveStarted(this,$2.protoToSave);"
+    }, {
+        match: /let (\w+)=((?:\(0,\w+\.\w+\)\(this\.ProtoClass,\w+\.settings\)));if\(null==\1\)return;(\w+\.h\.dispatch\(\{type:"USER_SETTINGS_PROTO_UPDATE",settings:\{proto:\1,type:this\.type\},resetEditInfo:!0,wasSaved:!0,local:!1\}\))/,
+        replace: "let $1=$2;if(null==$1)return;$self.saveSucceeded(this,presenceGuardSave,$1);$3"
+    }, {
+        match: /persistChanges=async\(\)=>\{[\s\S]*?\}catch\((\w+)\)\{/,
+        replace: "$&$self.saveFailed(this,presenceGuardSave,$1?.status===429);"
+    }]
+};
 export const selectionPatch = {
     find: /let\{status:\w+,currentStatus:\w+,description:/,
     group: true,
@@ -42,4 +59,14 @@ export const cameraPatch = {
         match: /return navigator\.mediaDevices\.getUserMedia\((\w+)\)/,
         replace: "return navigator.mediaDevices.getUserMedia($1).then(s=>($self.cameraAcquired($1,s),s))"
     }]
+};
+
+// This narrows changes to Discord's local automatic IDLE store event. It leaves
+// input timestamps, AFK calculations, notifications and other presence logic intact.
+export const nativeIdlePatch = {
+    find: 'type:"IDLE",idle:!0,idleSince:',
+    replacement: {
+        match: /Date\.now\(\)-(\w+)>(\w+)\.(\w+)\|\|(\w+)\(\)\?(\w+)\|\|(\w+)\.h\.dispatch\(\{type:"IDLE",idle:!0,idleSince:(\w+)\}\):\5&&\6\.h\.dispatch\(\{type:"IDLE",idle:!1\}\)/,
+        replace: "$self.nativeIdleProviderReady(()=>{const wanted=$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4());$self.nativeIdleObserved(wanted,$5);if(wanted&&!$5){$self.nativeIdleDispatch(true);$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})}else if(!wanted&&$5){$self.nativeIdleDispatch(false);$6.h.dispatch({type:\"IDLE\",idle:!1})}});$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4())?$5||($self.nativeIdleDispatch(true),$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})):$5&&($self.nativeIdleDispatch(false),$6.h.dispatch({type:\"IDLE\",idle:!1}))"
+    }
 };

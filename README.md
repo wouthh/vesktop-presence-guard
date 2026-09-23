@@ -1,12 +1,15 @@
 # PresenceGuard
 
 A small unofficial Vencord userplugin for **local own-status history**, optional
-Idle after inactivity-associated display blanking, and optional webcam DND.
+configured Idle after five minutes of desktop-wide inactivity, and optional webcam DND.
 No backend, telemetry, other-user tracking, or media acquisition.
 
 Installation enables PresenceGuard and local history in the selected main
-profile. **Automatic Idle and Webcam DND both start off.** Discord's existing
-automatic idle behavior stays enabled. Other profiles and plugins are preserved.
+profile. **Automatic Idle and Webcam DND start off on first installation.** A
+verified update preserves each profile's saved choices. Main's managed
+deployment uses Automatic Idle at 300 seconds; Alt keeps PresenceGuard disabled.
+The native Idle path remains in place and is narrowly coordinated with the
+desktop activity source. Other profiles and plugins are preserved.
 
 Open **User Settings → Vencord → Plugins → PresenceGuard → settings → Open
 PresenceGuard history and detector panel**. The Vencord toolbox also has a
@@ -19,10 +22,10 @@ all automatic writes even if a switch is on.
 ## Baseline and history
 
 Leave both rules off to answer: “Did my locally observed status become Idle
-when the display blanked, without PresenceGuard changing it?” Compare
-`OBSERVATION` events and their display snapshots. Configured Online and effective
-Idle are separate values; native idle is never adopted as plugin ownership.
-`SIMULATION` / `would_…` decisions are hypothetical, never status writes.
+when the desktop went inactive, without PresenceGuard changing configured
+status?” Compare observation events. Configured status, local effective
+presence, native Idle, and plugin ownership are separate values.
+SIMULATION / would… decisions are hypothetical, never status writes.
 
 History is profile-local in the native Vencord data directory's `PresenceGuard`
 subdirectory, outside cloud-synced settings. It retains at most 500 events and
@@ -45,12 +48,12 @@ storage remains unavailable. Successful clear cancels older pending events.
 
 ## Status safety
 
-Automation starts only from positively confirmed configured **and** effective
-Online, with a ready account, established gateway connection and verified client
-hooks. It never changes manual Idle, DND, Invisible, disconnected or uncertain
-presence. Confirmed camera capture takes precedence over qualifying display
-inactivity. Return to Online requires fresh return/clear evidence and continued
-ownership of the current status.
+Automatic Idle starts only from configured Online and either local effective
+Online or effective Idle positively attributed to Discord's native automatic
+Idle path. It requires a ready account, established gateway connection,
+verified status/native hooks and fresh GNOME evidence. Camera DND retains its
+existing Online-only eligibility and precedence. Manual Idle, DND, Invisible,
+disconnected or uncertain configured status is never changed.
 
 Every observed manual selection, including selecting the same value or changing
 its duration, invalidates pending writes and ownership before processing the
@@ -60,16 +63,31 @@ manual selection's new configured value can release a pending non-Online intent
 guard; the old Online preference cannot authorize another write while it loads.
 This guard survives a same-account reconnect and a temporarily unknown account;
 only a confirmed different account or explicit logout clears its account scope.
-An explicit manual Online selection
-permits fresh evaluation. Only the
-status field changes; duration and other profile fields stay intact. Observable
-unattributed writes revoke ownership. An unreported cross-device **same-value**
-selection cannot be detected. A matching value or nearby timestamp is never
-proof of ownership.
+An explicit manual Online selection permits fresh evaluation. PresenceGuard uses
+Discord's normal configured-status updater and changes only the status value;
+duration and other profile fields stay intact. Ownership begins only after the
+plugin's attributable configured Idle update is locally applied. Native Idle
+alone never grants ownership. A one-shot Mutter user-active watch restores
+configured Online on genuine input in any desktop application, while the plugin
+still owns Idle. Display blanking, locking, focus, aggregate presence and session
+events do not drive the inactivity timer.
+
+The local panel/history distinguishes configured status, effective presence,
+native Idle, ownership, local update confirmation and the updater's save
+lifecycle. A correlated save acknowledgement is evidence of that client save;
+local application alone is not proof of server persistence or mobile
+propagation. The timer measures this desktop only. Observable external configured
+status changes revoke ownership and pause automation. If Discord provides no
+distinguishable event for a cross-device same-value selection, PresenceGuard
+cannot detect it; equal values and timestamps do not prove ownership.
 
 Disabling an owning rule, stopping the plugin, switching accounts or reconnecting
-revokes ownership and leaves status unchanged. Ownership never survives a
-restart. Re-enabling the plugin in the same renderer leaves webcam automation
+cancels pending work, revokes ownership and leaves configured status unchanged.
+Startup/reconnect establishes fresh detector continuity and never adopts an
+existing configured Idle. Missing or stale activity evidence holds automation;
+an existing process-local owner may remain while configuration is still valid,
+but return requires fresh desktop input. Ownership never survives a restart.
+Stopping restores native Idle behavior. Re-enabling the plugin in the same renderer leaves webcam automation
 unavailable until a renderer restart, because acquisitions while disabled cannot
 be reconstructed safely; Idle and observation remain available. Unexplained reversals pause the affected rule instead of repeatedly
 fighting the client. Resume explicitly in the panel or select Online manually.
@@ -84,6 +102,16 @@ platforms are not implemented or claimed tested. Vencord integration is pinned t
 [`0e40e433d7aa9168f656aba733d01e761b7ca8ca`](https://github.com/Vendicated/Vencord/commit/0e40e433d7aa9168f656aba733d01e761b7ca8ca).
 Discord changes independently; runtime patch checks fail closed.
 
+- **Activity:** a GJS/Gio helper reads Mutter's GNOME-wide idle counter and a
+  one-shot user-active watch. The status policy uses a fixed 300-second
+  inactivity threshold independent of display blanking, lock state and Vesktop
+  focus. A brief input between polls is retained as an activity serial. Provider
+  or session changes, suspend/resume gaps, unverified counter resets and stale
+  observations produce Unknown; they do not invent a return or acquire a status.
+  Native Idle is cleared or suppressed while this source positively says the
+  desktop is active and configured Online or plugin-owned Idle is in scope. The
+  hook changes only Discord's local IDLE event; it leaves shared activity times,
+  AFK and notifications alone.
 - **Display:** a GJS/Gio helper reads Mutter power state, logical monitor topology,
   idle time, screen-shield activity, actual login1 lock state and suspend signals,
   reconciling current login1 sleep state
@@ -93,10 +121,13 @@ Discord changes independently; runtime patch checks fail closed.
   startup already blanked, provider restart or suspend gap cannot establish that
   sequence. Lock already present at startup or reconnect, or arriving before or
   together with blanking, remains Unknown; the
-  interface cannot prove whether that lock was manual or automatic. Screen-shield
+  interface cannot prove whether that lock was manual or automatic. These
+  observations do not authorize status changes. Screen-shield
   activity is kept distinct from locking and conservatively treated as ambiguous
   when it precedes blanking. The lock hint must come from the current user's
-  active Wayland session; missing or unsupported session state stays Unknown. Return requires powered-on displays and recent actual activity.
+  active Wayland session; missing or unsupported session state stays Unknown.
+  Camera-owned DND return still requires its confirmed display, native-idle and
+  camera conditions; plugin-owned Idle return uses fresh system-wide input.
   History retains power mode, lock, shield, suspend, threshold-crossed and monitor-count
   facts even when the inactivity cause is Unknown. Fact transitions are recorded
   separately from status changes; polling timestamps and changing idle counters

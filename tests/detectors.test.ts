@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PipeWireDetector, combineCamera, cameraSnapshot } from "../src/core/camera";
 import { DisplayDetector, type DisplayObservation } from "../src/core/display";
+import { ActivityDetector, IDLE_THRESHOLD_MS, type ActivityObservation } from "../src/core/activity";
 import { UNKNOWN } from "../src/core/types";
 const display = (extra: Partial<DisplayObservation> = {}): DisplayObservation => ({ at: 1000, power: 0, idleMs: 0, thresholdMs: 300000, locked: false, shieldActive: false, suspended: false, topology: "synthetic-topology", monitors: 2, provider: "synthetic-provider", ...extra });
 test("display needs correlated idle and power transition; confirms activity return", () => {
@@ -85,6 +86,40 @@ test("PipeWire restart cannot clear capture by reusing node IDs", () => {
 test("missing display lock/suspend fields cannot prove return", () => {
     const sample = display(); delete (sample as Partial<DisplayObservation>).locked;
     assert.equal(new DisplayDetector().observe(sample).value, "unknown");
+});
+
+const activitySample = (extra: Partial<ActivityObservation> = {}): ActivityObservation => ({ at: 1000, idleMs: 1000, suspended: false, provider: "mutter-owner/session/helper/epoch-1", activitySerial: 0, activityAt: 0, ...extra });
+test("system-wide input watch recognizes one brief activity pulse and carries it until five minutes", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample()).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 2000, idleMs: 100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    assert.equal(d.observe(activitySample({ at: 4000, idleMs: 2100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    let result = "active";
+    for (let at = 14000, idleMs = 12100; at < 302000; at += 10000, idleMs += 10000) result = d.observe(activitySample({ at, idleMs, activitySerial: 1, activityAt: 1900 })).value;
+    assert.equal(result, "active");
+    assert.equal(d.observe(activitySample({ at: 302000, idleMs: IDLE_THRESHOLD_MS, activitySerial: 1, activityAt: 1900 })).value, "inactive");
+});
+test("initial fresh input event is recognized without a prior poll baseline", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample({ activitySerial: 1, activityAt: 900 })).value, "active");
+});
+test("provider restart and low counter do not fabricate activity", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 90000 }));
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 0, provider: "restarted", activitySerial: 0, activityAt: 0 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 5000, idleMs: 2000, provider: "restarted" })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 7000, idleMs: 100, provider: "restarted", activitySerial: 1, activityAt: 6900 })).value, "active");
+});
+test("counter reset, suspend and stale continuity never count as input", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 70000 }));
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 0 })).reason, "idle_counter_reset_without_activity_event");
+    assert.equal(d.observe(activitySample({ at: 5000, idleMs: 1000 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 7000, idleMs: 3000, suspended: true })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 9000, idleMs: 0 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 25000, idleMs: 16000 })).reason, "activity_continuity_lost");
+});
+test("a fresh one-shot input signal remains valid across a polling gap without crossing providers", () => {
+    const d = new ActivityDetector(); d.observe(activitySample());
+    assert.equal(d.observe(activitySample({ at: 25000, idleMs: 100, activitySerial: 1, activityAt: 24000 })).value, "active");
 });
 
 test("hot re-enable blocks fresh PipeWire acquisition when local camera continuity was lost", () => {

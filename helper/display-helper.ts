@@ -30,10 +30,40 @@ let lastLease = false;
 let busy = false;
 let lastStart = 0;
 let lockIdentity = "";
+let idleMonitorOwner = "";
+let activityProviderEpoch = 0;
+let activitySerial = 0;
+let activityAt = 0;
+let activeWatch: number | null = null;
+let watchBusy = false;
+const pendingActiveSignals = new Set<number>();
 const uid = new Gio.Credentials().get_unix_user();
 const ids: { bus: any; id: number }[] = [];
 function subscribe(bus: any, name: string, iface: string, signal: string, path: string | null, fn: (...args: any[]) => void) {
     ids.push({ bus, id: bus.signal_subscribe(name, iface, signal, path, null, Gio.DBusSignalFlags.NONE, fn) });
+}
+async function addUserActiveWatch() {
+    if (!lastLease || !idleMonitorOwner || activeWatch !== null || watchBusy) return;
+    watchBusy = true;
+    let rearm = false;
+    try {
+        const result = await call(session, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "AddUserActiveWatch");
+        const id = Number(result[0]);
+        if (!Number.isInteger(id) || id < 0) throw Error("invalid_idle_watch_id");
+        if (!lastLease || !identity() || !idleMonitorOwner) {
+            await call(session, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "RemoveWatch", new GLib.Variant("(u)", [id]));
+        } else if (pendingActiveSignals.delete(id)) {
+            activitySerial++; activityAt = Date.now(); rearm = true;
+        } else activeWatch = id;
+    } catch { activeWatch = null; }
+    finally { watchBusy = false; if (rearm && lastLease) { void observe(); void addUserActiveWatch(); } }
+}
+async function removeUserActiveWatch() {
+    const id = activeWatch;
+    activeWatch = null;
+    pendingActiveSignals.clear();
+    if (id === null) return;
+    try { await call(session, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "RemoveWatch", new GLib.Variant("(u)", [id])); } catch { /* A vanished provider already removed the watch. */ }
 }
 async function observe() {
     if (busy) return;
@@ -46,20 +76,36 @@ async function observe() {
         releaseMonitoring(() => { if (wasEnabled) write({ version: 1, at: Date.now(), observation: null, reason: "lease_inactive" }); }, unsubscribe);
         return;
     }
-    if (!lastLease) { provider++; startSubscriptions(); }
+    if (!lastLease) { provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; startSubscriptions(); }
     lastLease = true;
     busy = true;
     const at = Date.now();
     if (lastStart && at - lastStart > 10000) provider++;
     lastStart = at;
+    let activityObservation: Record<string, unknown> | null = null;
     try {
-        const [power, idle, shield, topology, owner, sleep, lockProperties, loginOwner] = await Promise.all([
-            call(session, "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.freedesktop.DBus.Properties", "Get", new GLib.Variant("(ss)", ["org.gnome.Mutter.DisplayConfig", "PowerSaveMode"])),
+        const [idle, idleOwner, sleep] = await Promise.all([
             call(session, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "GetIdletime"),
+            call(session, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", new GLib.Variant("(s)", ["org.gnome.Mutter.IdleMonitor"])),
+            call(system, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.DBus.Properties", "Get", new GLib.Variant("(ss)", ["org.freedesktop.login1.Manager", "PreparingForSleep"]))
+        ]);
+        const nextIdleOwner = String(idleOwner[0]);
+        if (nextIdleOwner !== idleMonitorOwner) {
+            activityProviderEpoch++; activitySerial = 0; activityAt = 0; activeWatch = null; pendingActiveSignals.clear();
+            idleMonitorOwner = nextIdleOwner;
+        }
+        if (lastLease && idleMonitorOwner) void addUserActiveWatch();
+        activityObservation = { at: Date.now(), idleMs: Number(idle[0]), suspended: sleep[0].deepUnpack(), provider: `${idleMonitorOwner}:${instance}:${activityProviderEpoch}`, activitySerial, activityAt };
+    } catch {
+        activityProviderEpoch++; activitySerial = 0; activityAt = 0; idleMonitorOwner = "";
+        await removeUserActiveWatch();
+    }
+    try {
+        const [power, shield, topology, owner, lockProperties, loginOwner] = await Promise.all([
+            call(session, "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.freedesktop.DBus.Properties", "Get", new GLib.Variant("(ss)", ["org.gnome.Mutter.DisplayConfig", "PowerSaveMode"])),
             call(session, "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver", "GetActive"),
             call(session, "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.gnome.Mutter.DisplayConfig", "GetCurrentState"),
             call(session, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", new GLib.Variant("(s)", ["org.gnome.Mutter.DisplayConfig"])),
-            call(system, "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.DBus.Properties", "Get", new GLib.Variant("(ss)", ["org.freedesktop.login1.Manager", "PreparingForSleep"])),
             call(system, "org.freedesktop.login1", "/org/freedesktop/login1/session/auto", "org.freedesktop.DBus.Properties", "GetAll", new GLib.Variant("(s)", ["org.freedesktop.login1.Session"])),
             call(system, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", new GLib.Variant("(s)", ["org.freedesktop.login1"]))
         ]);
@@ -67,25 +113,47 @@ async function observe() {
         // GNOME writes actual lock state to login1 Session.LockedHint.
         const lock = loginSession(Object.fromEntries(["User", "Active", "Type", "Class", "LockedHint", "Id"].map(key => [key, lockProperties[0][key].deepUnpack()])), uid);
         const nextLockIdentity = `${loginOwner[0]}:${lock.identity}`;
-        if (nextLockIdentity !== lockIdentity) { provider++; lockIdentity = nextLockIdentity; }
+        if (nextLockIdentity !== lockIdentity) {
+            provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; lockIdentity = nextLockIdentity;
+            if (activityObservation) Object.assign(activityObservation, { at: Date.now(), provider: `${idleMonitorOwner}:${instance}:${activityProviderEpoch}`, activitySerial, activityAt });
+        }
         const logical = topology[2];
         if (!Array.isArray(logical)) throw Error();
         // Do not persist monitor names/serials. Geometry and connector count suffice for continuity.
         const shape = logical.map((m: any[]) => [m[0], m[1], m[2], m[3], m[5]?.length]);
-        const observation = { at, power: power[0].deepUnpack(), idleMs: Number(idle[0]), thresholdMs: settings.get_uint("idle-delay") * 1000, locked: lock.locked, shieldActive: shield[0], suspended: sleep[0].deepUnpack(), topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
-        if (lastLease && identity()) write({ version: 1, at, observation });
-    } catch { provider++; write({ version: 1, at, observation: null, reason: "gnome_provider_unavailable" }); }
+        const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: activityObservation?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: lock.locked, shieldActive: shield[0], suspended: activityObservation?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
+        if (lastLease && identity()) write({ version: 1, at: Date.now(), observation, activity: activityObservation });
+    } catch { provider++; write({ version: 1, at: Date.now(), observation: null, activity: activityObservation, reason: "display_provider_unavailable" }); }
     finally { busy = false; }
 }
 function startSubscriptions() {
-subscribe(system, "org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, () => { void observe(); });
-subscribe(system, "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", () => { provider++; void observe(); });
+    subscribe(system, "org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, () => { void observe(); });
+    subscribe(system, "org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", () => { provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; void observe(); });
 subscribe(session, "org.gnome.Mutter.DisplayConfig", "org.freedesktop.DBus.Properties", "PropertiesChanged", "/org/gnome/Mutter/DisplayConfig", () => { void observe(); });
 subscribe(session, "org.gnome.Mutter.DisplayConfig", "org.gnome.Mutter.DisplayConfig", "MonitorsChanged", "/org/gnome/Mutter/DisplayConfig", () => { provider++; void observe(); });
-subscribe(session, "org.gnome.ScreenSaver", "org.gnome.ScreenSaver", "ActiveChanged", "/org/gnome/ScreenSaver", () => { void observe(); });
+    subscribe(session, "org.gnome.ScreenSaver", "org.gnome.ScreenSaver", "ActiveChanged", "/org/gnome/ScreenSaver", () => { void observe(); });
+    subscribe(session, "org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus", (...args: any[]) => {
+        const [name, , nextOwner] = args[5]?.deepUnpack?.() ?? [];
+        if (name !== "org.gnome.Mutter.IdleMonitor") return;
+        idleMonitorOwner = String(nextOwner ?? "");
+        activityProviderEpoch++; activitySerial = 0; activityAt = 0; activeWatch = null; pendingActiveSignals.clear();
+        if (idleMonitorOwner && lastLease) void addUserActiveWatch();
+        void observe();
+    });
+    subscribe(session, "org.gnome.Mutter.IdleMonitor", "org.gnome.Mutter.IdleMonitor", "WatchFired", "/org/gnome/Mutter/IdleMonitor/Core", (...args: any[]) => {
+        const [id] = args[5]?.deepUnpack?.() ?? [];
+        if (activeWatch === null) { if (watchBusy && Number.isInteger(Number(id))) pendingActiveSignals.add(Number(id)); return; }
+        if (Number(id) !== activeWatch) return;
+        activeWatch = null;
+        activitySerial++;
+        activityAt = Date.now();
+        void addUserActiveWatch();
+        void observe();
+    });
 }
 function unsubscribe() {
     for (const { bus, id } of ids.splice(0)) bus.signal_unsubscribe(id);
+    void removeUserActiveWatch();
 }
 const interval = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 2, () => { void observe(); return GLib.SOURCE_CONTINUE; });
 function cleanup() {

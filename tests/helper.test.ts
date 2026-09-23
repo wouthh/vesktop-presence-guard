@@ -53,7 +53,7 @@ test("production helper re-reads sleep state after a resume signal missed withou
     await flush(); assert.equal(snapshot.observation.suspended, true);
     enabled = false; tick(); await flush(); assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive");
     sleeping = false; enabled = true; tick(); await flush();
-    assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 5);
+    assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 7);
     regularLease = false; tick(); await flush();
     assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive"); assert.equal(descriptors.size, 0);
 });
