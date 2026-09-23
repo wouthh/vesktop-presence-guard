@@ -63,7 +63,11 @@ test("a delayed save acknowledgement is rejected after a newer configured write 
     p.saveQueued(updater, idleLocal);
     const context = p.saveStarted(updater, idleLocal)!;
     const onlineLocal = { status: { value: "online" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 1500 };
-    p.register(onlineCallback, onlineToken); p.generated(onlineCallback, onlineLocal); assert.equal(p.take(onlineLocal), onlineToken);
+    p.register(onlineCallback, onlineToken); p.generated(onlineCallback, onlineLocal);
+    // markDirty queues before the local USER_SETTINGS_PROTO_UPDATE reaches take().
+    p.saveQueued(updater, onlineLocal); assert.equal(p.take(onlineLocal), onlineToken);
+    const onlineContext = p.saveStarted(updater, onlineLocal)!;
+    assert.equal(p.saveSucceeded(updater, onlineContext, onlineLocal), true);
     const lateIdleEcho = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
     assert.equal(p.saveSucceeded(updater, context, lateIdleEcho), false);
     assert.equal(p.takeSaveAck(lateIdleEcho), false);

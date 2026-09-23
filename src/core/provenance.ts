@@ -50,7 +50,6 @@ export class Provenance {
     saveQueued(updater: object, proto: object) {
         const token = this.updates.get(proto);
         if (!token) return undefined;
-        if (this.latestLocalToken && this.latestLocalToken !== token) this.supersededTokens.add(token);
         const queue = this.updaterTokens.get(updater) ?? [];
         if (!queue.includes(token)) queue.push(token);
         this.updaterTokens.set(updater, queue);
