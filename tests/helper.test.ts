@@ -23,13 +23,13 @@ test("production helper re-reads sleep state after a resume signal missed withou
     const source = buildSync({ entryPoints: ["helper/display-helper.ts"], bundle: true, write: false, format: "cjs", platform: "neutral", external: ["gi://Gio", "gi://GioUnix", "gi://GLib", "gi://GLibUnix"] }).outputFiles[0].text;
     let enabled = true, sleeping = true, regularLease = true, loginSessionUnavailable = false, sessionId = "synthetic-session", deferDisplayQuery = false, releaseDisplayQuery: (() => void) | null = null, snapshot: any, tick!: () => void;
     const idle: (() => void)[] = [], subscriptions = new Map<number, { name: string; signal: string; path: string | null; fn: (...args: any[]) => void }>(); let next = 1, nextWatch = 0;
-    const removedWatches: { owner: string; id: number }[] = [];
+    const removedWatches: { owner: string; path: string; id: number }[] = [];
     const descriptors = new Map<number, string>(); let nextFd = 10;
     class Variant { constructor(_type: string, public value: any) {} deepUnpack() { return this.value; } }
     const bus = {
-        call: (name: string, _path: string, _iface: string, method: string, params: Variant | null, _reply: unknown, _flags: unknown, _timeout: unknown, _cancel: unknown, callback: (bus: unknown, result: any) => void) => {
+        call: (name: string, path: string, _iface: string, method: string, params: Variant | null, _reply: unknown, _flags: unknown, _timeout: unknown, _cancel: unknown, callback: (bus: unknown, result: any) => void) => {
             if (method === "GetAll" && loginSessionUnavailable) { queueMicrotask(() => callback(null, { failed: true })); return; }
-            const value = method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: sessionId }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "GetSession" ? [sessionId === "synthetic-session" ? "/org/freedesktop/login1/session/_synthetic" : "/org/freedesktop/login1/session/_replacement"] : method === "AddUserActiveWatch" ? [++nextWatch] : method === "RemoveWatch" ? [removedWatches.push({ owner: name, id: Number(params?.value[0]) })] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
+            const value = method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: sessionId }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "GetSession" ? [sessionId === "synthetic-session" ? "/org/freedesktop/login1/session/_synthetic" : "/org/freedesktop/login1/session/_replacement"] : method === "AddUserActiveWatch" ? [++nextWatch] : method === "RemoveWatch" ? [removedWatches.push({ owner: name, path, id: Number(params?.value[0]) })] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
                 : method === "GetCurrentState" ? [0, [], [[0, 0, 1, 0, false, ["synthetic"]]]]
                     : method === "GetActive" ? [false] : method === "GetNameOwner" ? [params?.value[0] === "org.gnome.Mutter.IdleMonitor" ? ":1.20" : params?.value[0] === "org.freedesktop.login1" ? ":1.5" : "synthetic-provider"] : [0];
             const result = { deepUnpack: () => value };
@@ -59,7 +59,7 @@ test("production helper re-reads sleep state after a resume signal missed withou
     sleeping = false; enabled = true; tick(); await flush();
     assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 8); // Includes login1 owner continuity tracking.
     const oldWatch = nextWatch; sessionId = "replacement-session"; tick(); await flush();
-    assert(removedWatches.some(watch => watch.owner === ":1.20" && watch.id === oldWatch));
+    assert(removedWatches.some(watch => watch.owner === ":1.20" && watch.path === "/org/gnome/Mutter/IdleMonitor/Core" && watch.id === oldWatch));
     assert(nextWatch > oldWatch); // Polling found the session boundary and rearmed the one-shot watch.
     const watchFired = [...subscriptions.values()].find(subscription => subscription.name === "org.gnome.Mutter.IdleMonitor" && subscription.signal === "WatchFired")!.fn;
     watchFired(null, ":1.20", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "WatchFired", new Variant("(u)", [nextWatch])); await flush();

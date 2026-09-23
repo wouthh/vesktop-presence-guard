@@ -87,7 +87,7 @@ async function removeUserActiveWatch() {
     activeWatchEpoch = -1;
     pendingActiveSignals.clear();
     if (id === null || !owner) return;
-    try { await call(session, owner, "/org/gnome/Mutter.IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "RemoveWatch", new GLib.Variant("(u)", [id])); } catch { /* A vanished provider already removed the watch. */ }
+    try { await call(session, owner, "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "RemoveWatch", new GLib.Variant("(u)", [id])); } catch { /* A vanished provider already removed the watch. */ }
 }
 async function resetUserActiveWatch() {
     await removeUserActiveWatch();

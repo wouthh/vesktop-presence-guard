@@ -54,6 +54,20 @@ test("save acknowledgement rejects a changed duration or a nonmatching configure
     assert.equal(p.saveSucceeded(updater, context, { status: { value: "idle" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 500 }), false);
     assert.equal(p.saveSucceeded(updater, context, { status: { value: "online" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 }), false);
 });
+test("a delayed save acknowledgement is rejected after a newer configured write is locally applied", () => {
+    const p = new Provenance(), updater = {}, idleCallback = () => {}, onlineCallback = () => {};
+    const idleToken = { generation: 1, target: "idle" as const, rule: "idle" as const };
+    const onlineToken = { generation: 1, target: "online" as const, rule: "idle" as const };
+    const idleLocal = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
+    p.register(idleCallback, idleToken); p.generated(idleCallback, idleLocal); assert.equal(p.take(idleLocal), idleToken);
+    p.saveQueued(updater, idleLocal);
+    const context = p.saveStarted(updater, idleLocal)!;
+    const onlineLocal = { status: { value: "online" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 1500 };
+    p.register(onlineCallback, onlineToken); p.generated(onlineCallback, onlineLocal); assert.equal(p.take(onlineLocal), onlineToken);
+    const lateIdleEcho = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
+    assert.equal(p.saveSucceeded(updater, context, lateIdleEcho), false);
+    assert.equal(p.takeSaveAck(lateIdleEcho), false);
+});
 test("rate-limit retry keeps exact save context; terminal failures discard it", () => {
     const p = new Provenance(), updater = {}, callback = () => {};
     const token = { generation: 2, target: "idle" as const, rule: "idle" as const };

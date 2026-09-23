@@ -16,6 +16,8 @@ export class PresenceEngine {
     private pending: WriteToken | null = null;
     private previous: Snapshot | null = null;
     private owner: { status: Status; rule: Rule; token: WriteToken } | null = null;
+    private latestAppliedWrite: WriteToken | null = null;
+    private terminalSaveTokens = new WeakSet<WriteToken>();
     private paused = new Set<Rule>();
     private decisionKey = "";
     private detectorEpoch = -Infinity;
@@ -41,6 +43,7 @@ export class PresenceEngine {
         this.scheduledRule = null;
         this.pending = null;
         if (!keepOwner) this.owner = null;
+        if (!keepOwner) this.latestAppliedWrite = null;
     }
 
     boundary(reason: string) {
@@ -98,9 +101,15 @@ export class PresenceEngine {
 
     saveOutcome(token: WriteToken, state: NonNullable<HistoryEvent["saveState"]>, reason: string) {
         this.emit("save", reason, "plugin", this.adapter.read(), undefined, token.target, state);
+        const wasAlreadyTerminal = this.terminalSaveTokens.has(token);
         const failedPendingWrite = this.pending === token;
         const failedOwnedWrite = this.owner?.token === token;
-        if (state === "failed" && (failedPendingWrite || failedOwnedWrite)) {
+        const failedLatestWrite = this.latestAppliedWrite === token;
+        if (["succeeded", "failed", "unavailable"].includes(state)) {
+            this.terminalSaveTokens.add(token);
+            if (this.latestAppliedWrite === token) this.latestAppliedWrite = null;
+        }
+        if (state === "failed" && !wasAlreadyTerminal && (failedPendingWrite || failedOwnedWrite || failedLatestWrite)) {
             this.paused.add(token.rule);
             // A delayed save failure may belong to the current owner while a
             // different rule is already writing. Revoke only this token's
@@ -131,6 +140,7 @@ export class PresenceEngine {
         }
         const ownConfirmation = token !== undefined && token === this.pending && token.generation === this.generation && s.connected && s.capable && s.account && s.configured === token.target;
         if (ownConfirmation) {
+            this.latestAppliedWrite = this.terminalSaveTokens.has(token) ? null : token;
             this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule, token };
             this.pending = null;
             this.emit("confirmation", "configured_status_locally_applied_effective_presence_observed_separately", "plugin", s);

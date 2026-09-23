@@ -256,6 +256,18 @@ test("a late Idle save failure does not cancel an in-flight camera DND transitio
     f.signal("active", "inactive"); await f.advance();
     assert.deepEqual(f.writes, ["idle", "dnd", "online"]);
 });
+test("a failed save for the completed Online return pauses its rule but an older save does not", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.signal("active"); await f.advance();
+    assert.deepEqual(f.writes, ["idle", "online"]); assert.equal(f.engine.ownership, null);
+    f.engine.saveOutcome(f.tokens[0], "failed", "superseded_idle_save_failure");
+    assert.deepEqual(f.engine.pausedRules, []);
+    f.engine.saveOutcome(f.tokens[1], "failed", "completed_online_save_failure");
+    assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    f.signal("inactive"); await f.advance();
+    assert.deepEqual(f.writes, ["idle", "online"]);
+    assert(f.history.some(event => event.reason === "completed_online_save_failure" && event.saveState === "failed"));
+});
 test("shutdown cancels pending work before issuing it", async () => {
     const f = fixture(); f.signal("inactive"); f.engine.stop(); await f.advance(); assert.deepEqual(f.writes, []);
 });
