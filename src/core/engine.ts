@@ -15,7 +15,7 @@ export class PresenceEngine {
     private stopped = false;
     private pending: WriteToken | null = null;
     private previous: Snapshot | null = null;
-    private owner: { status: Status; rule: Rule } | null = null;
+    private owner: { status: Status; rule: Rule; token: WriteToken } | null = null;
     private paused = new Set<Rule>();
     private decisionKey = "";
     private detectorEpoch = -Infinity;
@@ -24,7 +24,7 @@ export class PresenceEngine {
     latestDecision = "starting";
     constructor(private adapter: Adapter, private clock: Clock, private options: Options) {}
 
-    get ownership() { return this.owner ? { ...this.owner } : null; }
+    get ownership() { return this.owner ? { status: this.owner.status, rule: this.owner.rule } : null; }
     get pausedRules() { return [...this.paused]; }
     get running() { return !this.stopped; }
 
@@ -98,9 +98,14 @@ export class PresenceEngine {
 
     saveOutcome(token: WriteToken, state: NonNullable<HistoryEvent["saveState"]>, reason: string) {
         this.emit("save", reason, "plugin", this.adapter.read(), undefined, token.target, state);
-        if (state === "failed" && token.generation === this.generation) {
+        const failedPendingWrite = this.pending === token;
+        const failedOwnedWrite = this.owner?.token === token;
+        if (state === "failed" && (failedPendingWrite || failedOwnedWrite)) {
             this.paused.add(token.rule);
-            this.invalidate(true);
+            // A delayed save failure may belong to the current owner while a
+            // different rule is already writing. Revoke only this token's
+            // pending mutation; never cancel unrelated scheduled or in-flight work.
+            if (failedPendingWrite) this.invalidate(true);
         }
     }
 
@@ -126,7 +131,7 @@ export class PresenceEngine {
         }
         const ownConfirmation = token !== undefined && token === this.pending && token.generation === this.generation && s.connected && s.capable && s.account && s.configured === token.target;
         if (ownConfirmation) {
-            this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule };
+            this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule, token };
             this.pending = null;
             this.emit("confirmation", "configured_status_locally_applied_effective_presence_observed_separately", "plugin", s);
         } else if (this.owner && s.configured !== this.owner.status) {

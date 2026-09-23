@@ -32,6 +32,10 @@ let busy = false;
 let lastStart = 0;
 let lockIdentity = "";
 let login1Owner = "";
+let login1SessionPath = "";
+let login1SessionPathOwner = "";
+let login1SessionId = "";
+let login1Validated = false;
 let login1SessionEpoch = 0;
 let login1FactsEpoch = 0;
 let idleMonitorOwner = "";
@@ -132,18 +136,33 @@ async function observe() {
                 const lock = loginSession(Object.fromEntries(["User", "Active", "Type", "Class", "LockedHint", "Id"].map(key => [key, sessionResult.value[0][key].deepUnpack()])), uid);
                 const nextLogin1Owner = String(loginOwnerResult.value[0]);
                 if (!nextLogin1Owner) throw Error("login1_owner_unavailable");
-                const nextLockIdentity = `${nextLogin1Owner}:${lock.identity}`;
+                let nextSessionPath = login1SessionPath;
+                if (login1SessionPathOwner !== nextLogin1Owner || login1SessionId !== lock.identity || !nextSessionPath) {
+                    const pathResult = await call(system, nextLogin1Owner, "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "GetSession", new GLib.Variant("(s)", [lock.identity]));
+                    nextSessionPath = String(pathResult[0]);
+                    if (!nextSessionPath.startsWith("/org/freedesktop/login1/session/") || nextSessionPath.endsWith("/auto") || nextSessionPath.endsWith("/self")) throw Error("login1_session_path_unavailable");
+                }
+                const nextLockIdentity = `${nextLogin1Owner}:${lock.identity}:${nextSessionPath}`;
                 if (nextLockIdentity !== lockIdentity) {
                     provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; lockIdentity = nextLockIdentity;
+                    void resetUserActiveWatch();
                 }
                 login1Owner = nextLogin1Owner;
+                login1SessionPath = nextSessionPath;
+                login1SessionPathOwner = nextLogin1Owner;
+                login1SessionId = lock.identity;
                 sessionLock = lock;
                 sessionIdentityAtSample = nextLockIdentity;
                 sessionValidated = sessionIdentityEpochAtSample === login1SessionEpoch;
+                if (sessionValidated) login1Validated = true;
             } catch { /* A missing or mismatched login session is not valid activity evidence. */ }
         }
         if (!sessionValidated) {
-            provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; login1SessionEpoch++; login1FactsEpoch++; lockIdentity = ""; login1Owner = "";
+            if (login1Validated) {
+                provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; login1SessionEpoch++; login1FactsEpoch++;
+                login1Validated = false;
+                void resetUserActiveWatch();
+            }
         }
         const [idleResult, idleOwnerResult, sleepResult] = activityResults;
         if (idleResult.status === "fulfilled" && idleOwnerResult.status === "fulfilled" && sleepResult.status === "fulfilled") {
@@ -166,7 +185,7 @@ async function observe() {
         }
     } catch {
         provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; login1SessionEpoch++; login1FactsEpoch++;
-        idleMonitorOwner = ""; lockIdentity = ""; login1Owner = ""; sessionLock = null; sessionIdentityAtSample = null; sessionValidated = false;
+        idleMonitorOwner = ""; lockIdentity = ""; login1Owner = ""; login1SessionPath = ""; login1SessionPathOwner = ""; login1SessionId = ""; login1Validated = false; sessionLock = null; sessionIdentityAtSample = null; sessionValidated = false;
         activityObservation = null; activityObservationEpoch = null;
         await removeUserActiveWatch();
     }
@@ -203,16 +222,14 @@ async function observe() {
 }
 function startSubscriptions() {
     subscribe(system, "org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, (...args: any[]) => {
-        if (args[2] === "/org/freedesktop/login1/session/auto") {
-            const [iface, changed, invalidated] = args[5]?.deepUnpack?.() ?? [];
-            if (iface === "org.freedesktop.login1.Session") {
-                const names = new Set<string>([...Object.keys(changed ?? {}), ...(Array.isArray(invalidated) ? invalidated : [])]);
-                if (["User", "Active", "Type", "Class", "Id", "LockedHint"].some(name => names.has(name))) login1FactsEpoch++;
-                if (["User", "Active", "Type", "Class", "Id"].some(name => names.has(name))) {
-                    provider++; login1SessionEpoch++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; lockIdentity = "";
-                    void resetUserActiveWatch();
-                }
-            }
+        if (!login1SessionPath || args[2] !== login1SessionPath) return;
+        const [iface, changed, invalidated] = args[5]?.deepUnpack?.() ?? [];
+        if (iface !== "org.freedesktop.login1.Session") return;
+        const names = new Set<string>([...Object.keys(changed ?? {}), ...(Array.isArray(invalidated) ? invalidated : [])]);
+        if (["User", "Active", "Type", "Class", "Id", "LockedHint"].some(name => names.has(name))) login1FactsEpoch++;
+        if (["User", "Active", "Type", "Class", "Id"].some(name => names.has(name))) {
+            provider++; login1SessionEpoch++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; login1Validated = false;
+            void resetUserActiveWatch();
         }
         void observe();
     });
@@ -221,8 +238,9 @@ function startSubscriptions() {
         if (name !== "org.freedesktop.login1") return;
         const next = String(nextOwner ?? "");
         if (next === login1Owner) return;
-        login1Owner = next; lockIdentity = ""; provider++; login1SessionEpoch++; login1FactsEpoch++;
+        login1Owner = next; provider++; login1SessionEpoch++; login1FactsEpoch++;
         activityProviderEpoch++; activitySerial = 0; activityAt = 0;
+        login1Validated = false;
         void resetUserActiveWatch();
         void observe();
     });

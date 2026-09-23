@@ -25,20 +25,35 @@ export class ActivityDetector {
     private previous: ActivityObservation | null = null;
     private provedSerial: number | null = null;
     private requalifyAt: number | null = null;
+    private unavailable = false;
 
-    reset() { this.previous = null; this.provedSerial = null; this.requalifyAt = null; }
+    reset() { this.previous = null; this.provedSerial = null; this.requalifyAt = null; this.unavailable = false; }
 
-    observe(o: ActivityObservation | null): Signal {
+    observe(o: ActivityObservation | null, now = o?.at ?? Date.now()): Signal {
         const scope = "GNOME system-wide user activity";
         if (!o || !Number.isFinite(o.at) || !Number.isFinite(o.idleMs) || o.idleMs < 0
             || !Number.isInteger(o.activitySerial) || o.activitySerial < 0 || !Number.isFinite(o.activityAt)
             || o.activityAt < 0 || o.activityAt > o.at || typeof o.suspended !== "boolean"
             || typeof o.provider !== "string" || !o.provider || o.provider.length > 512) {
-            this.reset(); return UNKNOWN(scope, "activity_provider_unavailable");
+            this.previous = null;
+            this.provedSerial = null;
+            this.unavailable = true;
+            return UNKNOWN(scope, "activity_provider_unavailable", Number.isFinite(now) ? now : Date.now());
         }
         const p = this.previous;
         this.previous = o;
-        if (o.suspended) { this.provedSerial = null; this.requalifyAt = o.at; return UNKNOWN(scope, "system_suspended", o.at); }
+        if (o.suspended) { this.provedSerial = null; this.requalifyAt = o.at; this.unavailable = false; return UNKNOWN(scope, "system_suspended", o.at); }
+        if (this.unavailable) {
+            this.unavailable = false;
+            this.provedSerial = null;
+            this.requalifyAt = o.at;
+            if (o.activitySerial > 0 && o.activityAt > 0 && o.at - o.activityAt <= MAX_GAP_MS) {
+                this.provedSerial = o.activitySerial;
+                this.requalifyAt = null;
+                return { value: "active", at: o.at, scope, reason: "mutter_user_active_watch_fired" };
+            }
+            return UNKNOWN(scope, "activity_recovery_boundary", o.at);
+        }
         if (!p) {
             if (o.activitySerial > 0 && o.activityAt > 0 && o.at - o.activityAt <= MAX_GAP_MS) {
                 this.provedSerial = o.activitySerial;

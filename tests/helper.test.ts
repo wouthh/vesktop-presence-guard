@@ -21,20 +21,23 @@ test("production helper enters its loop before quitting for an already-exited pa
 
 test("production helper re-reads sleep state after a resume signal missed without a lease", async () => {
     const source = buildSync({ entryPoints: ["helper/display-helper.ts"], bundle: true, write: false, format: "cjs", platform: "neutral", external: ["gi://Gio", "gi://GioUnix", "gi://GLib", "gi://GLibUnix"] }).outputFiles[0].text;
-    let enabled = true, sleeping = true, regularLease = true, loginSessionUnavailable = false, snapshot: any, tick!: () => void;
-    const idle: (() => void)[] = [], subscriptions = new Set<number>(); let next = 1;
+    let enabled = true, sleeping = true, regularLease = true, loginSessionUnavailable = false, sessionId = "synthetic-session", deferDisplayQuery = false, releaseDisplayQuery: (() => void) | null = null, snapshot: any, tick!: () => void;
+    const idle: (() => void)[] = [], subscriptions = new Map<number, { name: string; signal: string; path: string | null; fn: (...args: any[]) => void }>(); let next = 1, nextWatch = 0;
+    const removedWatches: { owner: string; id: number }[] = [];
     const descriptors = new Map<number, string>(); let nextFd = 10;
     class Variant { constructor(_type: string, public value: any) {} deepUnpack() { return this.value; } }
     const bus = {
-        call: (_name: string, _path: string, _iface: string, method: string, params: Variant | null, _reply: unknown, _flags: unknown, _timeout: unknown, _cancel: unknown, callback: (bus: unknown, result: unknown) => void) => {
+        call: (name: string, _path: string, _iface: string, method: string, params: Variant | null, _reply: unknown, _flags: unknown, _timeout: unknown, _cancel: unknown, callback: (bus: unknown, result: any) => void) => {
             if (method === "GetAll" && loginSessionUnavailable) { queueMicrotask(() => callback(null, { failed: true })); return; }
-            const value = method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: "synthetic-session" }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
+            const value = method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: sessionId }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "GetSession" ? [sessionId === "synthetic-session" ? "/org/freedesktop/login1/session/_synthetic" : "/org/freedesktop/login1/session/_replacement"] : method === "AddUserActiveWatch" ? [++nextWatch] : method === "RemoveWatch" ? [removedWatches.push({ owner: name, id: Number(params?.value[0]) })] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
                 : method === "GetCurrentState" ? [0, [], [[0, 0, 1, 0, false, ["synthetic"]]]]
-                    : method === "GetActive" ? [false] : method === "GetNameOwner" ? ["synthetic-provider"] : [0];
-            queueMicrotask(() => callback(null, { deepUnpack: () => value }));
+                    : method === "GetActive" ? [false] : method === "GetNameOwner" ? [params?.value[0] === "org.gnome.Mutter.IdleMonitor" ? ":1.20" : params?.value[0] === "org.freedesktop.login1" ? ":1.5" : "synthetic-provider"] : [0];
+            const result = { deepUnpack: () => value };
+            if (method === "GetCurrentState" && deferDisplayQuery) { deferDisplayQuery = false; releaseDisplayQuery = () => callback(null, result); return; }
+            queueMicrotask(() => callback(null, result));
         },
         call_finish: (result: any) => { if (result.failed) throw Error("synthetic_login1_unavailable"); return result; },
-        signal_subscribe: () => { const id = next++; subscriptions.add(id); return id; },
+        signal_subscribe: (name: string, _iface: string, signal: string, path: string | null, _arg: unknown, _flags: unknown, fn: (...args: any[]) => void) => { const id = next++; subscriptions.set(id, { name, signal, path, fn }); return id; },
         signal_unsubscribe: (id: number) => subscriptions.delete(id)
     };
     const glib = {
@@ -55,6 +58,17 @@ test("production helper re-reads sleep state after a resume signal missed withou
     enabled = false; tick(); await flush(); assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive");
     sleeping = false; enabled = true; tick(); await flush();
     assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 8); // Includes login1 owner continuity tracking.
+    const oldWatch = nextWatch; sessionId = "replacement-session"; tick(); await flush();
+    assert(removedWatches.some(watch => watch.owner === ":1.20" && watch.id === oldWatch));
+    assert(nextWatch > oldWatch); // Polling found the session boundary and rearmed the one-shot watch.
+    const watchFired = [...subscriptions.values()].find(subscription => subscription.name === "org.gnome.Mutter.IdleMonitor" && subscription.signal === "WatchFired")!.fn;
+    watchFired(null, ":1.20", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "WatchFired", new Variant("(u)", [nextWatch])); await flush();
+    assert.equal(snapshot.activity.activitySerial, 1); // The first brief input after rearm is retained.
+    const loginProperties = [...subscriptions.values()].find(subscription => subscription.name === "org.freedesktop.login1" && subscription.signal === "PropertiesChanged")!.fn;
+    deferDisplayQuery = true; tick(); await flush(); assert.equal(typeof releaseDisplayQuery, "function");
+    loginProperties(null, ":1.5", "/org/freedesktop/login1/session/_replacement", "org.freedesktop.DBus.Properties", "PropertiesChanged", new Variant("(sa{sv}as)", ["org.freedesktop.login1.Session", { Id: new Variant("s", "new-session") }, []]));
+    releaseDisplayQuery!(); releaseDisplayQuery = null; await flush();
+    assert.equal(snapshot.activity, null); assert.equal(snapshot.observation, null); assert.equal(snapshot.reason, "session_unavailable");
     loginSessionUnavailable = true; tick(); await flush();
     assert.equal(snapshot.observation, null); assert.equal(snapshot.activity, null); assert.equal(snapshot.reason, "session_unavailable");
     loginSessionUnavailable = false;

@@ -171,7 +171,7 @@ async function poll() {
         const [d, a, camera] = await Promise.all([Native.displaySnapshot(), Native.activitySnapshot(), Native.pipeWireSnapshot()]);
         if (epoch !== lifecycle || !engine?.running) return;
         display = displayDetector.observe(d);
-        activity = activityDetector.observe(a);
+        activity = activityDetector.observe(a, Date.now());
         nativeIdleReconcile?.();
         pwCamera = camera === null ? UNKNOWN("PipeWire", "pipewire_unavailable", Date.now()) : pipewireDetector.parse(camera, Date.now());
         tracks.prune();

@@ -17,11 +17,11 @@ function fixture(options: Partial<Options> = {}) {
     const history: HistoryEvent[] = [];
     const writes: Status[] = [];
     const tokens: WriteToken[] = [];
-    let gate: (() => Promise<void>) | undefined;
+    let gate: ((token: WriteToken) => Promise<void>) | undefined;
     let ack: (() => Promise<void>) | undefined;
     const engine = new PresenceEngine({ read: () => structuredClone(s), record: e => history.push(e), write: async (token, guard) => {
         tokens.push(token);
-        await gate?.();
+        await gate?.(token);
         if (!guard()) return;
         writes.push(token.target);
         s.configured = s.effective = token.target;
@@ -38,7 +38,7 @@ function fixture(options: Partial<Options> = {}) {
     function activity(value: Snapshot["activity"]["value"], reason: string = value) { s.activity = { ...s.activity, value, reason, at: now }; engine.sample(); }
     function display(value: Snapshot["display"]["value"]) { s.display = { ...s.display, value, at: now }; engine.sample(); }
     function manual(status: Status) { engine.manual(status); s.configured = s.effective = status; engine.sample("manual"); }
-    return { s, engine, history, writes, tokens, advance, signal, activity, display, manual, flush, now: () => now, delayWrite: (fn: () => Promise<void>) => { gate = fn; }, delayAck: (fn: () => Promise<void>) => { ack = fn; } };
+    return { s, engine, history, writes, tokens, advance, signal, activity, display, manual, flush, now: () => now, delayWrite: (fn: (token: WriteToken) => Promise<void>) => { gate = fn; }, delayAck: (fn: () => Promise<void>) => { ack = fn; } };
 }
 for (const boundary of ["reconnect", "account"]) test(`camera evidence must be observed after ${boundary}, not merely read again`, async () => {
     const f = fixture({ idle: false }); f.engine.sample();
@@ -242,6 +242,19 @@ test("a failed Idle save does not block the separate confirmed camera DND rule",
     f.engine.saveOutcome(f.tokens[0], "failed", "synthetic_server_save_failure");
     f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["idle", "dnd"]);
     f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle", "dnd", "online"]);
+});
+test("a late Idle save failure does not cancel an in-flight camera DND transition", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    let release!: () => void;
+    f.delayWrite(token => token.target === "dnd" ? new Promise<void>(resolve => { release = resolve; }) : Promise.resolve());
+    f.signal("active", "active"); await f.advance();
+    const cameraToken = f.tokens[1]; assert.equal(cameraToken?.target, "dnd");
+    f.engine.saveOutcome(f.tokens[0], "failed", "late_idle_save_failure");
+    release(); await f.flush();
+    assert.deepEqual(f.writes, ["idle", "dnd"]); assert.equal(f.engine.ownership?.rule, "camera");
+    assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    f.signal("active", "inactive"); await f.advance();
+    assert.deepEqual(f.writes, ["idle", "dnd", "online"]);
 });
 test("shutdown cancels pending work before issuing it", async () => {
     const f = fixture(); f.signal("inactive"); f.engine.stop(); await f.advance(); assert.deepEqual(f.writes, []);

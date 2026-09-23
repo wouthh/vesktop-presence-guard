@@ -126,6 +126,20 @@ test("counter reset, suspend and stale continuity never count as input", () => {
     assert.equal(d.observe(activitySample({ at: 9000, idleMs: 0 })).value, "unknown");
     assert.equal(d.observe(activitySample({ at: 25000, idleMs: 16000 })).reason, "activity_continuity_lost");
 });
+test("an unavailable activity interval keeps a recovery boundary before inactivity can be requalified", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ at: 1000, idleMs: IDLE_THRESHOLD_MS + 1000 }));
+    assert.equal(d.observe(null, 2000).value, "unknown");
+    const replacement = activitySample({ at: 100000, idleMs: IDLE_THRESHOLD_MS + 100000, provider: "replacement" });
+    assert.equal(d.observe(replacement).reason, "activity_recovery_boundary");
+    assert.equal(d.observe(activitySample({ ...replacement, at: 102000, idleMs: replacement.idleMs + 2000 })).value, "unknown");
+    let result = "unknown";
+    for (let at = 112000; at <= 402000; at += 10000) result = d.observe(activitySample({ ...replacement, at, idleMs: replacement.idleMs + at - replacement.at })).value;
+    assert.equal(result, "inactive");
+});
+test("one genuine input pulse is still recognized when activity returns after an unavailable interval", () => {
+    const d = new ActivityDetector(); d.observe(activitySample()); d.observe(null, 2000);
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 100, activitySerial: 1, activityAt: 2900, provider: "replacement" })).value, "active");
+});
 test("a fresh one-shot input signal remains valid across a polling gap without crossing providers", () => {
     const d = new ActivityDetector(); d.observe(activitySample());
     assert.equal(d.observe(activitySample({ at: 25000, idleMs: 100, activitySerial: 1, activityAt: 24000 })).value, "active");
