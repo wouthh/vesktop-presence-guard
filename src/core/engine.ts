@@ -193,14 +193,18 @@ export class PresenceEngine {
             }
         }
         if (this.owner) {
-            if (this.paused.has(this.owner.rule)) return { reason: "owned_rule_paused_after_write_failure" };
+            const releaseAlreadyInFlight = this.pending?.target === "online" && this.pending.rule === this.owner.rule;
             if (this.owner.rule === "idle") {
-                if (fresh(s.activity, this.clock.now()) && s.activity.value === "active") {
+                if (fresh(s.activity, this.clock.now()) && s.activity.value === "active" && (!this.paused.has(this.owner.rule) || releaseAlreadyInFlight)) {
                     return { target: "online", rule: "idle", reason: "confirmed_desktop_activity_releasing_owned_idle" };
                 }
+                if (this.paused.has(this.owner.rule)) return { reason: "owned_rule_paused_after_write_failure" };
                 if (!fresh(s.activity, this.clock.now())) return { reason: "activity_data_missing_or_stale_no_release" };
-            } else if (fresh(s.display, this.clock.now()) && s.display.value === "active" && s.nativeIdle === false && (!camera || (fresh(s.camera, this.clock.now()) && s.camera.value === "inactive"))) {
-                return { target: "online", rule: this.owner.rule, reason: "confirmed_return_releasing_owned_status" };
+            } else {
+                if (fresh(s.display, this.clock.now()) && s.display.value === "active" && s.nativeIdle === false && (!camera || (fresh(s.camera, this.clock.now()) && s.camera.value === "inactive")) && (!this.paused.has(this.owner.rule) || releaseAlreadyInFlight)) {
+                    return { target: "online", rule: this.owner.rule, reason: "confirmed_return_releasing_owned_status" };
+                }
+                if (this.paused.has(this.owner.rule)) return { reason: "owned_rule_paused_after_write_failure" };
             }
             return { reason: "return_not_confirmed" };
         }
