@@ -93,11 +93,20 @@ test("system-wide input watch recognizes one brief activity pulse and carries it
     const d = new ActivityDetector();
     assert.equal(d.observe(activitySample()).value, "unknown");
     assert.equal(d.observe(activitySample({ at: 2000, idleMs: 100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    assert.equal(d.observe(activitySample({ at: 2000, idleMs: 100, activitySerial: 1, activityAt: 1900 })).value, "active");
     assert.equal(d.observe(activitySample({ at: 4000, idleMs: 2100, activitySerial: 1, activityAt: 1900 })).value, "active");
     let result = "active";
     for (let at = 14000, idleMs = 12100; at < 302000; at += 10000, idleMs += 10000) result = d.observe(activitySample({ at, idleMs, activitySerial: 1, activityAt: 1900 })).value;
     assert.equal(result, "active");
     assert.equal(d.observe(activitySample({ at: 302000, idleMs: IDLE_THRESHOLD_MS, activitySerial: 1, activityAt: 1900 })).value, "inactive");
+});
+test("duplicate helper snapshots at the inactivity boundary do not restart qualification", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample({ idleMs: IDLE_THRESHOLD_MS - 1000 })).value, "unknown");
+    const crossed = activitySample({ at: 2000, idleMs: IDLE_THRESHOLD_MS });
+    assert.equal(d.observe(crossed).value, "inactive");
+    assert.equal(d.observe(crossed).value, "inactive");
+    assert.equal(d.observe(activitySample({ at: 4000, idleMs: IDLE_THRESHOLD_MS + 2000 })).value, "inactive");
 });
 test("initial fresh input event is recognized without a prior poll baseline", () => {
     const d = new ActivityDetector();

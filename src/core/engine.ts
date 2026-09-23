@@ -63,6 +63,7 @@ export class PresenceEngine {
 
     external(source: Source = "unknown") {
         this.paused.add("idle");
+        this.paused.add("camera");
         if (this.owner) this.paused.add(this.owner.rule);
         if (this.pending) this.paused.add(this.pending.rule);
         if (this.scheduledRule) this.paused.add(this.scheduledRule);

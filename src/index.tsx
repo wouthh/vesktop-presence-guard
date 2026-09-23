@@ -14,7 +14,7 @@ import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, Us
 import { BUILD_INFO } from "./buildInfo";
 import { ActivityDetector } from "./core/activity";
 import { cameraSnapshot, PipeWireDetector } from "./core/camera";
-import { isConfiguredIntervention } from "./core/configured-update";
+import { isConfiguredIntervention, isManualSelectionUpdate, matchesManualExpiry } from "./core/configured-update";
 import { DisplayDetector } from "./core/display";
 import { describeDisplayFacts } from "./core/displayFacts";
 import { PresenceEngine } from "./core/engine";
@@ -53,7 +53,7 @@ let lifecycle = 0;
 let statusHooks = false;
 let manualHook = false;
 const manualActions = new WeakSet<object>();
-let expectedManualStatus: { target: string; until: number } | null = null;
+let expectedManualStatus: { target: string; expiresAt: number; until: number } | null = null;
 let cameraHook = false;
 let cameraContinuity = true;
 let connectionFresh = false;
@@ -144,7 +144,11 @@ function statusUpdate(event: any) {
     const changed = configuredSignature !== null && nextSignature !== null && configuredSignature !== nextSignature;
     configuredSignature = nextSignature;
     const expected = expectedManualStatus;
-    const matchesManual = expected !== null && expected.until >= Date.now() && (!hasStatus || status(nested.value) === expected.target);
+    const matchesManual = isManualSelectionUpdate({
+        expected: expected !== null && expected.until >= Date.now(), changed, local: event.local, partial: event.partial,
+        targetMatches: expected !== null && (!hasStatus || status(nested.value) === expected.target) && status(Configured.getSetting()) === expected.target,
+        expiryMatches: expected !== null && matchesManualExpiry(expected.expiresAt, proto.statusExpiresAtMs ?? nested?.statusExpiresAtMs)
+    });
     if (matchesManual) expectedManualStatus = null;
     // Full user-settings snapshots and presence/session events are not manual
     // selections. Only a changed configured-status proto is an intervention.
@@ -228,7 +232,11 @@ export default definePlugin({
         if (!engine?.running) return;
         // The picker hook already revoked synchronously. Generic status actions
         // also represent native expiry and are not proof of a manual selection.
-        if (action && manualActions.delete(action)) expectedManualStatus = { target: String(action.nextStatus), until: Date.now() + 15_000 };
+        if (action && manualActions.delete(action)) {
+            const requestedAt = Date.now();
+            const duration = typeof action.durationMillis === "number" && Number.isFinite(action.durationMillis) ? action.durationMillis : null;
+            expectedManualStatus = { target: String(action.nextStatus), expiresAt: duration === null ? 0 : requestedAt + duration, until: requestedAt + 15_000 };
+        }
         queueMicrotask(() => engine?.sample());
     },
     manualProviderReady() { manualHook = true; },
@@ -236,7 +244,9 @@ export default definePlugin({
         if (engine?.running) {
             const target = status(action.nextStatus);
             manualActions.add(action);
-            expectedManualStatus = { target, until: Date.now() + 15_000 };
+            const requestedAt = Date.now();
+            const duration = typeof action.durationMillis === "number" && Number.isFinite(action.durationMillis) ? action.durationMillis : null;
+            expectedManualStatus = { target, expiresAt: duration === null ? 0 : requestedAt + duration, until: requestedAt + 15_000 };
             provenance.clear(); saveState = "unavailable";
             engine.manual(target);
         }

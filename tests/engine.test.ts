@@ -194,7 +194,12 @@ test("disable owning rule and stop leave status untouched", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.configure({ observe: true, idle: false, camera: true }); f.signal("active"); await f.advance(); f.engine.stop(); assert.deepEqual(f.writes, ["idle"]); assert.equal(f.engine.ownership, null);
 });
 test("external same-value writes revoke and pause; native reversal is not fought", async () => {
-    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.external("external"); f.s.configured = f.s.effective = "online"; f.signal("inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle"]); assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.external("external"); f.s.configured = f.s.effective = "online"; f.signal("inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle"]); assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]);
+});
+test("external configured Online edit cannot be overwritten by a fresh camera observation", async () => {
+    const f = fixture(); f.s.camera.value = "active"; f.engine.external("external"); f.engine.sample(); await f.advance();
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]);
+    f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
 });
 test("no redundant or flapping writes", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance(); for (let i = 0; i < 20; i++) { f.signal("inactive"); await f.advance(); } assert.deepEqual(f.writes, ["idle"]);
@@ -264,13 +269,13 @@ test("observable external configured override during settings loading cancels th
     const f = fixture(); let release!: () => void; f.delayWrite(() => new Promise(r => { release = r; }));
     f.signal("inactive"); await f.advance();
     f.s.configured = f.s.effective = "idle"; f.engine.external("external"); release(); await f.flush();
-    assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null); assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null); assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]);
 });
 test("observable external configured override during save acknowledgement cannot restore ownership", async () => {
     const f = fixture(); let release!: () => void; f.delayAck(() => new Promise(r => { release = r; }));
     f.signal("inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle"]);
     f.engine.external("external"); f.s.configured = f.s.effective = "online"; release(); await f.flush();
-    assert.equal(f.engine.ownership, null); assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    assert.equal(f.engine.ownership, null); assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]);
 });
 
 test("disabling an awaiting camera transition preserves an enabled Idle owner", async () => {
@@ -311,7 +316,7 @@ for (const rule of ["idle", "camera"] as const) test(`unattributed intervention 
     const f = fixture({ idle: rule === "idle", camera: rule === "camera" });
     f.signal(rule === "idle" ? "inactive" : "active", rule === "camera" ? "active" : "inactive");
     f.engine.external("external"); f.engine.sample(); await f.advance();
-    assert.deepEqual(f.writes, []); assert.deepEqual(f.engine.pausedRules, rule === "idle" ? ["idle"] : ["idle", "camera"]);
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.engine.pausedRules.sort(), ["camera", "idle"]);
     f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, [rule === "idle" ? "idle" : "dnd"]);
 });
 

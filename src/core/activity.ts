@@ -63,7 +63,7 @@ export class ActivityDetector {
             this.requalifyAt = o.at;
             return UNKNOWN(scope, "activity_provider_changed", o.at);
         }
-        if (o.at <= p.at || o.at - p.at > MAX_GAP_MS) {
+        if (o.at < p.at || o.at - p.at > MAX_GAP_MS) {
             this.provedSerial = null;
             this.requalifyAt = o.at;
             return UNKNOWN(scope, "activity_continuity_lost", o.at);

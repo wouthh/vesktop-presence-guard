@@ -2,6 +2,7 @@
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import GLibUnix from "gi://GLibUnix";
+import { activityForCurrentEpoch } from "./activity-epoch";
 import { readHelperInput as read } from "./read-input";
 import { loginSession } from "./login-session";
 import { leaseActive, releaseMonitoring, startIdentity } from "./lifetime";
@@ -83,6 +84,8 @@ async function observe() {
     if (lastStart && at - lastStart > 10000) provider++;
     lastStart = at;
     let activityObservation: Record<string, unknown> | null = null;
+    let activityObservationEpoch: number | null = null;
+    const activitySampleEpoch = activityProviderEpoch;
     try {
         const [idle, idleOwner, sleep] = await Promise.all([
             call(session, "org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "GetIdletime"),
@@ -95,7 +98,10 @@ async function observe() {
             idleMonitorOwner = nextIdleOwner;
         }
         if (lastLease && idleMonitorOwner) void addUserActiveWatch();
-        activityObservation = { at: Date.now(), idleMs: Number(idle[0]), suspended: sleep[0].deepUnpack(), provider: `${idleMonitorOwner}:${instance}:${activityProviderEpoch}`, activitySerial, activityAt };
+        if (activitySampleEpoch === activityProviderEpoch) {
+            activityObservationEpoch = activitySampleEpoch;
+            activityObservation = { at: Date.now(), idleMs: Number(idle[0]), suspended: sleep[0].deepUnpack(), provider: `${idleMonitorOwner}:${instance}:${activityObservationEpoch}`, activitySerial, activityAt };
+        }
     } catch {
         activityProviderEpoch++; activitySerial = 0; activityAt = 0; idleMonitorOwner = "";
         await removeUserActiveWatch();
@@ -115,15 +121,19 @@ async function observe() {
         const nextLockIdentity = `${loginOwner[0]}:${lock.identity}`;
         if (nextLockIdentity !== lockIdentity) {
             provider++; activityProviderEpoch++; activitySerial = 0; activityAt = 0; lockIdentity = nextLockIdentity;
-            if (activityObservation) Object.assign(activityObservation, { at: Date.now(), provider: `${idleMonitorOwner}:${instance}:${activityProviderEpoch}`, activitySerial, activityAt });
         }
+        const currentActivity = activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch);
         const logical = topology[2];
         if (!Array.isArray(logical)) throw Error();
         // Do not persist monitor names/serials. Geometry and connector count suffice for continuity.
         const shape = logical.map((m: any[]) => [m[0], m[1], m[2], m[3], m[5]?.length]);
-        const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: activityObservation?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: lock.locked, shieldActive: shield[0], suspended: activityObservation?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
-        if (lastLease && identity()) write({ version: 1, at: Date.now(), observation, activity: activityObservation });
-    } catch { provider++; write({ version: 1, at: Date.now(), observation: null, activity: activityObservation, reason: "display_provider_unavailable" }); }
+        const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: currentActivity?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: lock.locked, shieldActive: shield[0], suspended: currentActivity?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
+        if (lastLease && identity()) write({ version: 1, at: Date.now(), observation, activity: currentActivity });
+    } catch {
+        provider++;
+        const currentActivity = activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch);
+        write({ version: 1, at: Date.now(), observation: null, activity: currentActivity, reason: "display_provider_unavailable" });
+    }
     finally { busy = false; }
 }
 function startSubscriptions() {
