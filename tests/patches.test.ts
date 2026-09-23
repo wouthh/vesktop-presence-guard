@@ -83,6 +83,7 @@ test("save lifecycle patch matches updater queue, request, success and failure c
         const next = code.replace(replacement.match, replacement.replace);
         assert.notEqual(next, code); code = next;
     }
+    assert(code.includes('saveFailed(this,presenceGuardSave,e?.status===429?"rate_limited":"terminal")'));
     new Function("$self", "m", "a", "c", `return (${code})();`);
 });
 
@@ -93,15 +94,16 @@ test("native Idle integration changes only the local IDLE branch and keeps its r
     const events: any[] = []; let reconcile!: () => void, idle = true; const idleSince = 1000;
     let decisionInput: boolean | undefined, suppress = true;
     const nativeObservations: [boolean, boolean][] = [];
-    const self = { nativeIdleProviderReady: (fn: () => void) => { reconcile = fn; }, nativeIdleDecision: (eligible: boolean) => { decisionInput = eligible; return suppress ? false : eligible; }, nativeIdleObserved: (eligible: boolean, localIdle: boolean) => nativeObservations.push([eligible, localIdle]), nativeIdleDispatch: (next: boolean) => { idle = next; } };
+    const self = { nativeIdleProviderReady: (fn: () => void) => { reconcile = fn; }, nativeIdleDecision: (eligible: boolean) => { decisionInput = eligible; return suppress ? false : eligible; }, nativeIdleCurrent: () => idle, nativeIdleObserved: (eligible: boolean, localIdle: boolean) => nativeObservations.push([eligible, localIdle]), nativeIdleDispatch: (next: boolean) => { idle = next; } };
     const N = new Function("$self", "Date", "I", "A", "S", "f", "l", "c", "i", "u", "p", `return (${code});`)(self, Date, 1000, { sdF: 1 }, () => false, idle, { h: { dispatch: (event: any) => { events.push(event); if (event.type === "IDLE") idle = event.idle; } } }, { cU: { getSetting: () => 0 } }, null, { A: { Millis: { SECOND: 1000 } } }, false);
     N(); const afkCount = events.filter(event => event.type === "AFK").length; const timestamp = idleSince;
     assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false]);
     assert.equal(decisionInput, true);
-    reconcile(); assert.deepEqual(nativeObservations, [[false, true]]); assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
-    idle = true; suppress = false; reconcile();
-    assert.deepEqual(nativeObservations, [[false, true], [true, true]]);
-    assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false, false]);
+    reconcile(); assert.deepEqual(nativeObservations, [[false, false]]); assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
+    suppress = false; reconcile();
+    assert.deepEqual(nativeObservations, [[false, false], [true, false]]);
+    assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false, true]);
+    assert.equal(idle, true);
     assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
     assert.equal(idleSince, timestamp);
 });

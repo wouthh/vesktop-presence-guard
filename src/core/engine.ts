@@ -166,8 +166,8 @@ export class PresenceEngine {
             }
         }
         if (idle && !this.paused.has("idle")) {
-            if (!simulation && !s.nativeIdleHookReady) return { reason: "native_idle_hook_not_ready" };
             if (!this.owner && s.configured === "online") {
+                if (!simulation && !s.nativeIdleHookReady) return { reason: "native_idle_hook_not_ready" };
                 const online = s.effective === "online";
                 const nativeIdle = s.effective === "idle" && s.nativeIdle === true && s.nativeIdleAttributed;
                 if (!online && !nativeIdle) return { reason: s.effective === "idle" ? "effective_idle_not_attributed_to_native" : "effective_presence_uncertain" };

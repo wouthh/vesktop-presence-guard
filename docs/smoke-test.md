@@ -42,7 +42,8 @@ are separate evidence.
    Ownership and pending writes must be discarded at restart/reconnect/disable;
    an already owned status may remain local while activity is Unknown, but no
    return may be inferred from stale data. Existing configured Idle is never
-   adopted.
+   adopted. If the native Idle hook is unsupported, Idle automation must remain
+   unavailable and the panel must report that state.
 10. Use clear/export and the labelled fixture simulation. Export remains local;
     simulation must not create real status writes or ownership.
 

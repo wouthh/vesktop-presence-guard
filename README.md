@@ -76,10 +76,14 @@ The local panel/history distinguishes configured status, effective presence,
 native Idle, ownership, local update confirmation and the updater's save
 lifecycle. A correlated save acknowledgement is evidence of that client save;
 local application alone is not proof of server persistence or mobile
-propagation. The timer measures this desktop only. Observable external configured
-status changes revoke ownership and pause automation. If Discord provides no
-distinguishable event for a cross-device same-value selection, PresenceGuard
-cannot detect it; equal values and timestamps do not prove ownership.
+propagation. Rate-limited saves remain pending while Discord retries; terminal
+failures remain visible and pause that rule until Resume. If the native Idle hook
+fails its compatibility check, Automatic Idle stays unavailable and the panel
+reports the missing hook. The timer measures this desktop only. Observable
+external configured-status changes revoke ownership and pause automation. If
+Discord provides no distinguishable event for a cross-device same-value
+selection, PresenceGuard cannot detect it; equal values and timestamps do not
+prove ownership.
 
 Disabling an owning rule, stopping the plugin, switching accounts or reconnecting
 cancels pending work, revokes ownership and leaves configured status unchanged.

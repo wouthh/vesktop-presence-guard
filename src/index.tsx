@@ -253,7 +253,13 @@ export default definePlugin({
     },
     saveFailed(owner: object, context: any, kind: string) {
         if (!context) return;
-        provenance.saveFailed(owner, context, kind === "rate_limited");
+        const retrying = kind === "rate_limited";
+        provenance.saveFailed(owner, context, retrying);
+        if (retrying) {
+            saveState = "pending";
+            engine?.saveOutcome(context.token, "pending", "configured_status_save_rate_limited_retrying");
+            return;
+        }
         saveState = "failed";
         engine?.saveOutcome(context.token, "failed", `configured_status_save_failed_${kind}`);
     },
@@ -270,6 +276,7 @@ export default definePlugin({
         const pluginOwnedIdle = engine?.ownership?.rule === "idle";
         return fresh(activity, Date.now()) && activity.value === "active" && (configured === "online" || pluginOwnedIdle) ? false : nativeEligible;
     },
+    nativeIdleCurrent() { return Idle.isIdle() === true; },
     nativeIdleObserved(nativeEligible: boolean, localIdle: boolean) {
         const configured = status(Configured.getSetting());
         nativeIdleAttributed = pluginActive && settings.store.idle && Idle.isIdle() === true && isNativeAutomaticIdle(configured, nativeEligible, localIdle);
@@ -315,7 +322,7 @@ export default definePlugin({
         });
         for (const event of ["AFK", "SESSIONS_REPLACE"]) subscribe(event, () => queueMicrotask(() => engine?.sample("unknown")));
         for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); engine?.boundary(event.toLowerCase()); provenance.clear(); });
-        for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); engine?.boundary("connection_open_new_epoch"); nativeIdleReconcile?.(); queueMicrotask(() => engine?.sample()); });
+        for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); provenance.clear(); saveState = "unavailable"; engine?.boundary("connection_open_new_epoch"); nativeIdleReconcile?.(); queueMicrotask(() => engine?.sample()); });
         const epoch = lifecycle;
         void loadHistory().then(notify, notify);
         void Native.consumeWelcome().then(show => { if (show && epoch === lifecycle) openPanel(); });

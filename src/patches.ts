@@ -34,7 +34,7 @@ export const saveLifecyclePatch = {
         replace: "let $1=$2;if(null==$1)return;$self.saveSucceeded(this,presenceGuardSave,$1);$3"
     }, {
         match: /persistChanges=async\(\)=>\{[\s\S]*?\}catch\((\w+)\)\{/,
-        replace: "$&$self.saveFailed(this,presenceGuardSave,$1?.status===429);"
+        replace: "$&$self.saveFailed(this,presenceGuardSave,$1?.status===429?\"rate_limited\":\"terminal\");"
     }]
 };
 export const selectionPatch = {
@@ -67,6 +67,6 @@ export const nativeIdlePatch = {
     find: 'type:"IDLE",idle:!0,idleSince:',
     replacement: {
         match: /Date\.now\(\)-(\w+)>(\w+)\.(\w+)\|\|(\w+)\(\)\?(\w+)\|\|(\w+)\.h\.dispatch\(\{type:"IDLE",idle:!0,idleSince:(\w+)\}\):\5&&\6\.h\.dispatch\(\{type:"IDLE",idle:!1\}\)/,
-        replace: "$self.nativeIdleProviderReady(()=>{const wanted=$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4());$self.nativeIdleObserved(wanted,$5);if(wanted&&!$5){$self.nativeIdleDispatch(true);$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})}else if(!wanted&&$5){$self.nativeIdleDispatch(false);$6.h.dispatch({type:\"IDLE\",idle:!1})}});$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4())?$5||($self.nativeIdleDispatch(true),$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})):$5&&($self.nativeIdleDispatch(false),$6.h.dispatch({type:\"IDLE\",idle:!1}))"
+        replace: "$self.nativeIdleProviderReady(()=>{const wanted=$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4());const current=$self.nativeIdleCurrent();$self.nativeIdleObserved(wanted,current);if(wanted&&!current){$self.nativeIdleDispatch(true);$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})}else if(!wanted&&current){$self.nativeIdleDispatch(false);$6.h.dispatch({type:\"IDLE\",idle:!1})}});$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4())?$5||($self.nativeIdleDispatch(true),$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})):$5&&($self.nativeIdleDispatch(false),$6.h.dispatch({type:\"IDLE\",idle:!1}))"
     }
 };

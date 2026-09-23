@@ -145,6 +145,12 @@ test("webcam-owned DND keeps its existing return path until active evidence", as
     const f = fixture(); f.signal("inactive"); await f.advance(); f.signal("inactive", "active"); await f.advance(); f.signal("inactive", "inactive"); await f.advance(); f.signal("active"); await f.advance();
     assert.deepEqual(f.writes, ["idle", "dnd", "online"]);
 });
+test("native Idle hook readiness gates Idle acquisition but not camera-owned return", async () => {
+    const f = fixture(); f.signal("active", "active"); await f.advance();
+    f.s.nativeIdleHookReady = false;
+    f.signal("active", "inactive"); await f.advance();
+    assert.deepEqual(f.writes, ["dnd", "online"]);
+});
 test("Online camera cycle returns Online", async () => {
     const f = fixture(); f.signal("active", "active"); await f.advance(); f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, ["dnd", "online"]);
 });
@@ -218,6 +224,13 @@ test("a confirmed local write with a failed save stays visible and pauses return
     assert.equal(f.engine.ownership?.status, "idle"); assert.deepEqual(f.engine.pausedRules, ["idle"]);
     assert(f.history.some(event => event.kind === "save" && event.saveState === "failed"));
     f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("a rate-limited save remains pending without pausing an owned Idle return", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.engine.saveOutcome(f.tokens[0], "pending", "synthetic_rate_limited_retry");
+    f.signal("active"); await f.advance();
+    assert.deepEqual(f.writes, ["idle", "online"]); assert.deepEqual(f.engine.pausedRules, []);
+    assert(f.history.some(event => event.kind === "save" && event.saveState === "pending"));
 });
 test("a failed Idle save does not block the separate confirmed camera DND rule", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance();
