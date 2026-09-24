@@ -31,7 +31,7 @@ export const saveLifecyclePatch = {
         replace: "$1const presenceGuardSave=$self.saveStarted(this,$2.protoToSave);"
     }, {
         match: /let (\w+)=((?:\(0,\w+\.\w+\)\(this\.ProtoClass,\w+\.settings\)));if\(null==\1\)return;(\w+\.h\.dispatch\(\{type:"USER_SETTINGS_PROTO_UPDATE",settings:\{proto:\1,type:this\.type\},resetEditInfo:!0,wasSaved:!0,local:!1\}\))/,
-        replace: "let $1=$2;if(null==$1)return;$self.saveSucceeded(this,presenceGuardSave,$1);$3"
+        replace: "let $1=$2;if(null==$1){$self.saveUnavailable(this,presenceGuardSave);return;}$self.saveSucceeded(this,presenceGuardSave,$1);$3"
     }, {
         match: /persistChanges=async\(\)=>\{[\s\S]*?\}catch\((\w+)\)\{/,
         replace: "$&$self.saveFailed(this,presenceGuardSave,$1?.status===429?\"rate_limited\":\"terminal\");"

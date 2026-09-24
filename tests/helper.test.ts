@@ -56,6 +56,7 @@ test("production helper re-reads sleep state after a resume signal missed withou
     runInNewContext(source, { ARGV: ["123", "456", "/synthetic/snapshot", "/synthetic/lease"], TextDecoder, TextEncoder, require: (name: string) => ({ "gi://Gio": gio, "gi://GioUnix": gioUnix, "gi://GLib": glib, "gi://GLibUnix": { signal_add: () => 1 } })[name] });
     const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
     await flush(); assert.equal(snapshot.observation.suspended, true);
+    assert.equal(snapshot.version, 2); assert.equal(snapshot.sequence, 1);
     enabled = false; tick(); await flush(); assert.equal(subscriptions.size, 0); assert.equal(snapshot.reason, "lease_inactive");
     sleeping = false; enabled = true; tick(); await flush();
     assert.equal(snapshot.observation.suspended, false); assert.equal(subscriptions.size, 8); // Includes login1 owner continuity tracking.
@@ -72,9 +73,13 @@ test("production helper re-reads sleep state after a resume signal missed withou
     watchFired(null, ":1.20", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "WatchFired", new Variant("(u)", [watchDuringPoll]));
     releaseDisplayQuery!(); releaseDisplayQuery = null; await flush();
     const raceSnapshots = snapshots.slice(beforeActivityRace);
-    assert.equal(raceSnapshots[0]?.activity, null); // The pre-input counter cannot publish across the watch event.
-    assert.equal(raceSnapshots.at(-1)?.activity?.idleMs, 0); // The queued fresh sample retains the brief input.
+    assert.equal(raceSnapshots[0]?.activity?.inputOnly, true); // The fresh input survives while its old counter is withheld.
+    assert.equal(raceSnapshots[0]?.activity?.idleMs, null);
+    assert((raceSnapshots[0]?.observation?.idleMs ?? -1) >= 0 && (raceSnapshots[0]?.observation?.idleMs ?? 5000) < 5000); // Use the confirmed input timestamp without reusing the stale counter.
     assert.equal(raceSnapshots.at(-1)?.activity?.activitySerial, 2);
+    assert(raceSnapshots.every((entry, index) => index === 0 || entry.sequence > raceSnapshots[index - 1].sequence));
+    tick(); await flush(); assert.equal(snapshot.activity.idleMs, 0); // The bounded periodic sample refreshes the counter after the input pulse.
+    assert.equal(snapshot.activity.activitySerial, 2);
     const loginProperties = [...subscriptions.values()].find(subscription => subscription.name === "org.freedesktop.login1" && subscription.signal === "PropertiesChanged")!.fn;
     deferDisplayQuery = true; tick(); await flush(); assert.equal(typeof releaseDisplayQuery, "function");
     loginProperties(null, ":1.5", "/org/freedesktop/login1/session/_replacement", "org.freedesktop.DBus.Properties", "PropertiesChanged", new Variant("(sa{sv}as)", ["org.freedesktop.login1.Session", { Id: new Variant("s", "new-session") }, []]));

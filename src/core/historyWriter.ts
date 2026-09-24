@@ -13,10 +13,14 @@ export class HistoryWriter {
     private pending: HistoryEvent[] = [];
     private draining?: Promise<void>;
     private clearing?: Promise<void>;
+    private clearingEvents: HistoryEvent[] = [];
     private paused = false;
     constructor(private append: (event: HistoryEvent) => Promise<unknown>, private now: () => number) {}
     get pendingCount() { return this.pending.length; }
-    enqueue(event: HistoryEvent) { this.pending = retain([...this.pending, event], this.now()); }
+    enqueue(event: HistoryEvent) {
+        if (this.clearing) this.clearingEvents = retain([...this.clearingEvents, event], this.now());
+        else this.pending = retain([...this.pending, event], this.now());
+    }
     flush(): Promise<void> {
         if (this.clearing) return this.clearing.then(() => this.flush());
         if (this.draining) return this.draining;
@@ -27,22 +31,39 @@ export class HistoryWriter {
     }
     private async drain() {
         while (!this.paused && this.pending.length) {
-            const event = this.pending[0];
-            await this.append(event);
-            this.pending = this.pending.filter(candidate => candidate !== event);
+            const event = this.pending.shift()!;
+            try { await this.append(event); }
+            catch (error) {
+                this.pending = retain([event, ...this.pending], this.now());
+                throw error;
+            }
         }
     }
     clear(operation: () => Promise<unknown>): Promise<void> {
         if (this.clearing) return this.clearing;
-        const covered = new Set(this.pending);
         this.paused = true;
-        this.clearing = (async () => {
+        this.clearingEvents = [];
+        const clearing = (async () => {
             // An already-issued append completes before the native clear. Never
             // replay an older queued event after a successful user clear.
-            await this.draining?.catch(() => undefined);
-            await operation();
-            this.pending = this.pending.filter(event => !covered.has(event));
-        })().finally(() => { this.paused = false; this.clearing = undefined; });
-        return this.clearing;
+            try {
+                await this.draining?.catch(() => undefined);
+                await operation();
+                const events = this.clearingEvents;
+                this.clearing = undefined;
+                this.clearingEvents = [];
+                this.pending = events;
+            } catch (error) {
+                const events = this.clearingEvents;
+                this.clearing = undefined;
+                this.clearingEvents = [];
+                this.pending = retain([...this.pending, ...events], this.now());
+                throw error;
+            } finally {
+                this.paused = false;
+            }
+        })();
+        this.clearing = clearing;
+        return clearing;
     }
 }

@@ -40,6 +40,7 @@ export interface Snapshot {
 }
 export interface Options { observe: boolean; idle: boolean; camera: boolean; }
 export type EventKind = "observation" | "request" | "confirmation" | "skip" | "simulation" | "error" | "boundary" | "save";
+export type EventImportance = "control" | "detector";
 export type SaveState = "pending" | "succeeded" | "failed" | "unavailable";
 export type Source = "manual" | "plugin" | "native/client" | "external" | "unknown";
 export interface HistoryEvent {
@@ -52,6 +53,10 @@ export interface HistoryEvent {
     aggregate: Status;
     reason: string;
     owned: boolean;
+    importance?: EventImportance;
+    repeatCount?: number;
+    firstAt?: number;
+    lastAt?: number;
     nativeIdleAttributed?: boolean;
     activity?: Signal;
     saveState?: SaveState;

@@ -5,6 +5,7 @@ import { PresenceEngine } from "../src/core/engine";
 import { DisplayDetector } from "../src/core/display";
 import { clearHistoryView, loadHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
+import { statusMutator } from "../src/core/mutator";
 import { combineCamera } from "../src/core/camera";
 import { UNKNOWN } from "../src/core/types";
 import type { HistoryEvent, Options, Snapshot, Status, WriteToken } from "../src/core/types";
@@ -81,7 +82,53 @@ test("baseline records ambiguous power-save facts and native Idle separately wit
     const idle = f.history.find(e => e.reason === "configured_online_observed_native_idle");
     assert.equal(idle?.configured, "online"); assert.equal(idle?.display.facts?.power, 3);
     assert.equal(idle?.kind, "observation"); assert.equal(idle?.owned, false);
+    assert.equal(f.history.find(e => e.reason === "status_observed")?.importance, "control");
     assert.deepEqual(f.writes, []); assert(!f.history.some(e => e.kind === "request" || e.kind === "confirmation"));
+});
+test("activity uncertainty reason changes remain distinct detector history", () => {
+    const f = fixture();
+    f.s.activity = { ...f.s.activity, value: "unknown", reason: "activity_provider_unavailable", at: f.now() }; f.engine.sample();
+    f.s.activity = { ...f.s.activity, value: "unknown", reason: "idle_counter_reset_without_activity_event", at: f.now() }; f.engine.sample();
+    const observations = retain(f.history, f.now()).filter(event => event.kind === "observation" && event.importance === "detector" && event.activity?.value === "unknown");
+    assert.deepEqual(observations.map(event => event.activity?.reason), ["activity_provider_unavailable", "idle_counter_reset_without_activity_event"]);
+});
+test("display and camera uncertainty cause changes remain distinct decisions and history", () => {
+    const f = fixture();
+    f.s.display = { ...f.s.display, value: "unknown", reason: "display_poll_failed", at: f.now() }; f.engine.sample();
+    f.s.display = { ...f.s.display, reason: "display_provider_restarted", at: f.now() }; f.engine.sample();
+    f.s.camera = { ...f.s.camera, value: "unknown", reason: "camera_probe_unavailable", at: f.now() }; f.engine.sample();
+    f.s.camera = { ...f.s.camera, reason: "camera_hook_unsupported", at: f.now() }; f.engine.sample();
+    const skips = f.history.filter(event => event.kind === "skip");
+    assert.equal(skips.length, 4);
+    assert.deepEqual(skips.map(event => [event.display.reason, event.camera.reason, event.importance]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [
+        ["display_poll_failed", "clear", "control"],
+        ["display_provider_restarted", "clear", "detector"],
+        ["display_provider_restarted", "camera_probe_unavailable", "control"],
+        ["display_provider_restarted", "camera_hook_unsupported", "detector"]
+    ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+    const retained = retain(f.history, f.now());
+    assert.equal(retained.filter(event => event.kind === "skip").length, 4);
+    assert.deepEqual(retained.filter(event => event.kind === "skip").map(event => [event.display.reason, event.camera.reason]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [
+        ["display_poll_failed", "clear"],
+        ["display_provider_restarted", "clear"],
+        ["display_provider_restarted", "camera_probe_unavailable"],
+        ["display_provider_restarted", "camera_hook_unsupported"]
+    ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+});
+test("detector-only display cause churn stays out of the control-history partition", () => {
+    const f = fixture(); f.engine.sample();
+    f.s.display = { ...f.s.display, value: "unknown", reason: "display_cause_0", at: f.now() }; f.engine.sample();
+    const controlCount = f.history.filter(event => event.importance === "control").length;
+    for (let i = 1; i <= 420; i++) {
+        f.s.display = { ...f.s.display, reason: `display_cause_${i}`, at: f.now() };
+        f.engine.sample();
+    }
+    const churn = f.history.filter(event => event.kind === "skip" && event.display.reason.startsWith("display_cause_"));
+    assert.equal(churn.length, 421);
+    assert(churn.slice(1).every(event => event.importance === "detector"));
+    const retained = retain(f.history, f.now());
+    assert.equal(retained.filter(event => event.importance === "control").length, controlCount);
+    assert(retained.some(event => event.display.reason === "display_cause_420"));
 });
 for (const value of ["idle", "dnd", "invisible", "offline", "unknown"] as Status[]) test(`non-owned ${value} remains untouched`, async () => {
     const f = fixture(); f.s.configured = f.s.effective = value; f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);
@@ -206,7 +253,25 @@ test("no redundant or flapping writes", async () => {
 });
 test("history retention caps both age and count", () => {
     const f = fixture(); f.engine.sample(); const base = f.history[0]; const now = RETENTION_MS * 2;
-    const entries = Array.from({ length: 600 }, (_, i) => ({ ...base, at: now - i })); assert.equal(retain(entries, now).length, 500); assert.deepEqual(retain([{ ...base, at: 0 }, { ...base, at: now + 1 }], now), []);
+    const entries = Array.from({ length: 1000 }, (_, i) => ({ ...base, at: now - i, reason: `retention_${i}`, importance: i % 2 ? "control" as const : "detector" as const }));
+    const kept = retain(entries, now);
+    assert.equal(kept.length, 500);
+    assert.equal(kept.filter(event => event.importance === "control").length, 400);
+    assert.equal(kept.filter(event => event.importance === "detector").length, 100);
+    assert.deepEqual(retain([{ ...base, at: 0 }, { ...base, at: now + 1 }], now), []);
+});
+
+test("overnight detector churn cannot evict status and control history", () => {
+    const f = fixture(); f.engine.sample(); const base = f.history[0];
+    const start = 10_000_000, end = start + 24 * 60 * 60 * 1_000;
+    const controls: HistoryEvent[] = Array.from({ length: 12 }, (_, i) => ({ ...base, at: start + i, kind: "request", reason: `control_${i}`, importance: "control" }));
+    const detectorChurn: HistoryEvent[] = Array.from({ length: 43_200 }, (_, i) => ({ ...base, at: start + i * 2_000, kind: "observation", reason: `detector_reason_${i % 4}`, importance: "detector" }));
+    const kept = retain([...controls, ...detectorChurn], end);
+    assert(kept.length <= 500);
+    assert(controls.every(event => kept.some(row => row.reason === event.reason)));
+    assert(kept.filter(event => event.importance === "control").length >= controls.length);
+    assert(kept.filter(event => event.importance === "detector").length <= 100);
+    assert(kept.some(event => (event.repeatCount ?? 0) > 1 && Number.isFinite(event.firstAt) && Number.isFinite(event.lastAt)));
 });
 test("provenance follows exact objects, never equal values", () => {
     const p = new Provenance(), callback = () => {}, proto = { status: "idle" }; const token: WriteToken = { generation: 1, target: "idle", rule: "idle" }; p.register(callback, token); p.generated(callback, proto);
@@ -222,6 +287,26 @@ test("a rejected write pauses without retrying or retaining ownership", async ()
     f.signal("inactive"); await f.advance(); assert.deepEqual(f.engine.pausedRules, ["idle"]);
     f.signal("inactive"); await f.advance(); assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null);
 });
+test("production guarded-writer cancellation before mutation is retried after eligibility recovers", async () => {
+    const f = fixture(); let cancelOnce = true;
+    f.delayWrite(token => {
+        const draft = { status: { value: "online" } };
+        if (cancelOnce) {
+            cancelOnce = false;
+            statusMutator(token.target, () => false)(draft);
+        } else statusMutator(token.target, () => true)(draft);
+        assert.equal(draft.status.value, token.target);
+        return Promise.resolve();
+    });
+    f.signal("inactive"); await f.advance();
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(f.engine.pausedRules, []);
+    assert.equal(f.engine.pendingPhase, "debounce");
+    await f.advance();
+    assert.deepEqual(f.writes, ["idle"]);
+    assert.equal(f.engine.ownership?.status, "idle");
+    assert(f.history.some(event => event.reason === "write_cancelled_before_local_mutation_reevaluating"));
+});
 test("a confirmed local write with a failed save stays visible and pauses return until Resume", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance();
     f.engine.saveOutcome(f.tokens[0], "failed", "synthetic_server_save_failure");
@@ -229,6 +314,15 @@ test("a confirmed local write with a failed save stays visible and pauses return
     assert.equal(f.engine.ownership?.status, "idle"); assert.deepEqual(f.engine.pausedRules, ["idle"]);
     assert(f.history.some(event => event.kind === "save" && event.saveState === "failed"));
     f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("an unusable terminal save acknowledgement pauses an owned Idle rule", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    const token = f.tokens[0];
+    f.engine.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched");
+    assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    f.signal("active"); await f.advance();
+    assert.deepEqual(f.writes, ["idle"]);
+    assert(f.history.some(event => event.saveState === "unavailable" && event.reason === "configured_status_save_acknowledgement_unmatched"));
 });
 test("a rate-limited save remains pending without pausing an owned Idle return", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance();
@@ -292,7 +386,19 @@ test("new start epoch rejects fresh-looking detector values retained by an adapt
 test("history loading preserves distinct same-millisecond observations", () => {
     const f = fixture(); f.engine.sample(); const event = f.history.find(e => e.kind === "observation")!;
     const changed: HistoryEvent = { ...event, status: "idle", configured: "online" };
-    assert.deepEqual(mergeHistory([event, changed], [event, changed], event.at), [event, changed]);
+    const merged = mergeHistory([event, changed], [event, changed], event.at);
+    assert.equal(merged.length, 2);
+    assert.deepEqual(merged.map(row => row.status).sort(), ["idle", "online"]);
+    assert(merged.every(row => row.importance === "control"));
+});
+
+test("history loading preserves same-millisecond activity causes and native Idle attribution", () => {
+    const f = fixture(); f.engine.sample();
+    const event = f.history.find(e => e.kind === "observation" && e.importance === "detector")!;
+    const activityChanged: HistoryEvent = { ...event, activity: { ...event.activity!, reason: "second_activity_cause" } };
+    const attributionChanged: HistoryEvent = { ...event, nativeIdleAttributed: true };
+    assert.equal(mergeHistory([event], [activityChanged], event.at).length, 2);
+    assert.equal(mergeHistory([event], [attributionChanged], event.at).length, 2);
 });
 
 test("external intervention pauses both owner and in-flight transition rules", async () => {
@@ -323,11 +429,15 @@ test("disabling an awaiting camera transition preserves an enabled Idle owner", 
     f.delayWrite(async () => {}); f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
 });
 test("history clear keeps events recorded after the serialized clear request", async () => {
-    const f = fixture(); f.engine.sample(); const original = f.history[0];
+    const f = fixture(); f.engine.sample(); const original = f.history.find(event => event.importance === "detector")!;
     let view = [original]; let release!: () => void;
-    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }));
-    const later = { ...original, at: original.at + 1 }; view = [...view, later]; release(); await clearing;
-    assert.deepEqual(view, [later]);
+    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }), async () => {}, () => original.at + 1);
+    assert.deepEqual(view, []);
+    const later = { ...original, at: original.at + 1 };
+    view = retain([...view, later], later.at);
+    release(); await clearing;
+    assert.equal(view.length, 1); assert.equal(view[0].at, later.at);
+    assert.equal(view[0].firstAt, later.at); assert.equal(view[0].repeatCount, 1);
 });
 
 test("failed clear reloads retained startup history and preserves events received during the request", async () => {
@@ -336,8 +446,25 @@ test("failed clear reloads retained startup history and preserves events receive
     const view = { get: () => events, set: (value: HistoryEvent[]) => { events = value; } };
     const startup = loadHistoryView(view, () => new Promise(r => { release = r; }), () => generation === 0, () => recent.at);
     generation++;
-    await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at)), /read_only_storage/);
-    assert.deepEqual(events, [old, recent]);
+    await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at), () => recent.at), /read_only_storage/);
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map(event => event.at), [old.at, recent.at]);
+});
+
+test("failed clear remains bounded when its storage reload also fails", async () => {
+    const f = fixture(); f.engine.sample(); const base = f.history[0], now = f.now();
+    const makeWindow = (prefix: string, end: number) => [
+        ...Array.from({ length: 400 }, (_, i) => ({ ...base, at: end - 500 + i, kind: "request" as const, reason: `${prefix}_control_${i}`, importance: "control" as const })),
+        ...Array.from({ length: 100 }, (_, i) => ({ ...base, at: end - 100 + i, reason: `${prefix}_detector_${i}`, importance: "detector" as const }))
+    ];
+    let view: HistoryEvent[] = makeWindow("before", now), rejectClear!: (error: Error) => void;
+    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise((_, reject) => { rejectClear = reject; }), async () => { throw Error("storage_read_failed"); }, () => now);
+    view = makeWindow("during", now);
+    rejectClear(Error("storage_clear_failed"));
+    await assert.rejects(clearing, /storage_clear_failed/);
+    assert.equal(view.length, 500);
+    assert.equal(view.filter(event => event.importance === "control").length, 400);
+    assert.equal(view.filter(event => event.importance === "detector").length, 100);
 });
 
 for (const choice of ["idle", "dnd", "invisible", "unknown"] as const) test(`pending manual ${choice} blocks acquisition from the old Online preference`, async () => {

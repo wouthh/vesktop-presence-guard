@@ -10,10 +10,12 @@ are separate evidence.
 1. With both rules off, inspect configured status, local effective presence,
    native Idle, desktop activity and ownership. Let ordinary display blanking or
    locking occur. Those display facts must not cause configured-status writes.
-2. On Main with Automatic Idle enabled, begin from configured Online. Leave the
-   desktop untouched for five minutes. Confirm configured Idle, local effective
-   presence, native Idle and plugin ownership separately. Under healthy detector
-   conditions, the transition target is within ten seconds of five minutes.
+2. On Main with Automatic Idle enabled, deliberately select configured Online.
+   Run one unlocked and one locked-but-awake five-minute inactivity cycle. A lock
+   does not select Idle immediately; the desktop timer continues while locked.
+   Confirm configured Idle, local effective presence, native Idle and plugin
+   ownership separately. Under healthy detector conditions, the transition
+   target is within ten seconds of five minutes.
 3. While PresenceGuard owns Idle, make a brief input in another application.
    Confirm configured Online within ten seconds, ownership release, native Idle
    cleared and local effective presence separately. Repeat several away/return
@@ -49,6 +51,12 @@ are separate evidence.
    that state.
 10. Use clear/export and the labelled fixture simulation. Export remains local;
     simulation must not create real status writes or ownership.
+
+Synthetic acceptance also checks both the status-group draft and nested root
+settings envelope, status-only updates, optional timestamp wrappers, exact save
+echo provenance, unrelated snapshots, cancelled writes during settings loading,
+and protected status history under overnight-scale detector churn. These checks
+do not establish remote save or mobile behavior.
 
 The desktop inactivity timer does not use phone activity. Human observations
 must record synthetic output, local configured/effective state, correlated save

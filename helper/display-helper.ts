@@ -15,7 +15,8 @@ function identity() {
 }
 function write(value: unknown) {
     const file = Gio.File.new_for_path(snapshotPath);
-    file.replace_contents(new TextEncoder().encode(JSON.stringify(value)), null, false, Gio.FileCreateFlags.PRIVATE | Gio.FileCreateFlags.REPLACE_DESTINATION, null);
+    const snapshot = value && typeof value === "object" ? { ...(value as Record<string, unknown>), version: 2, sequence: ++snapshotSequence } : value;
+    file.replace_contents(new TextEncoder().encode(JSON.stringify(snapshot)), null, false, Gio.FileCreateFlags.PRIVATE | Gio.FileCreateFlags.REPLACE_DESTINATION, null);
 }
 function call(bus: any, name: string, path: string, iface: string, method: string, params: any = null): Promise<any> {
     return new Promise((resolve, reject) => bus.call(name, path, iface, method, params, null, Gio.DBusCallFlags.NO_AUTO_START, 1500, null, (_: unknown, result: unknown) => {
@@ -30,6 +31,7 @@ let provider = 0;
 let lastLease = false;
 let busy = false;
 let lastStart = 0;
+let snapshotSequence = 0;
 let lockIdentity = "";
 let login1Owner = "";
 let login1SessionPath = "";
@@ -47,6 +49,7 @@ let activeWatchOwner = "";
 let activeWatchEpoch = -1;
 let watchBusy = false;
 let observeAfterCurrent = false;
+let lastSignalObserveAt = 0;
 const pendingActiveSignals = new Set<number>();
 const uid = new Gio.Credentials().get_unix_user();
 const ids: { bus: any; id: number }[] = [];
@@ -81,8 +84,34 @@ async function addUserActiveWatch() {
     finally { watchBusy = false; if (rearm && lastLease) { requestObserve(); void addUserActiveWatch(); } }
 }
 function requestObserve() {
-    if (busy) observeAfterCurrent = true;
+    if (busy) { observeAfterCurrent = true; return; }
+    const now = Date.now();
+    if (now - lastSignalObserveAt < 1_000) return;
+    lastSignalObserveAt = now;
     void observe();
+}
+function currentActivityForSample(
+    sampled: Record<string, unknown> | null,
+    sampledEpoch: number | null,
+    requestEpoch: number,
+    requestSerial: number,
+    requestActivityAt: number,
+    suspended: unknown,
+    sessionCurrent: boolean
+): Record<string, unknown> | null {
+    if (!sessionCurrent || requestEpoch !== activityProviderEpoch) return null;
+    if (requestSerial === activitySerial && requestActivityAt === activityAt) {
+        return activityForCurrentEpoch(sampled, sampledEpoch, activityProviderEpoch, true) as Record<string, unknown> | null;
+    }
+    const at = Date.now();
+    // Preserve a one-shot Mutter input pulse when it invalidates the counter
+    // sampled concurrently. The counter itself remains unavailable until the
+    // coalesced fresh observation completes.
+    if (Number.isInteger(activitySerial) && activitySerial > requestSerial && activityAt >= requestActivityAt
+        && at >= activityAt && at - activityAt <= 10_000 && suspended === false && idleMonitorOwner) {
+        return { at, idleMs: null, suspended: false, provider: `${idleMonitorOwner}:${instance}:${activityProviderEpoch}`, activitySerial, activityAt, inputOnly: true };
+    }
+    return null;
 }
 async function removeUserActiveWatch() {
     const id = activeWatch;
@@ -120,6 +149,7 @@ async function observe() {
     let sessionLock: { locked: boolean; identity: string } | null = null;
     let sessionIdentityAtSample: string | null = null;
     let sessionValidated = false;
+    let activitySuspendedAtSample: unknown = null;
     const activitySampleEpoch = activityProviderEpoch;
     const activitySerialAtSample = activitySerial;
     const activityAtSample = activityAt;
@@ -172,6 +202,7 @@ async function observe() {
             }
         }
         const [idleResult, idleOwnerResult, sleepResult] = activityResults;
+        if (sleepResult.status === "fulfilled") activitySuspendedAtSample = sleepResult.value[0].deepUnpack();
         if (idleResult.status === "fulfilled" && idleOwnerResult.status === "fulfilled" && sleepResult.status === "fulfilled") {
             const [idle, idleOwner, sleep] = [idleResult.value, idleOwnerResult.value, sleepResult.value];
             const nextIdleOwner = String(idleOwner[0]);
@@ -205,8 +236,7 @@ async function observe() {
         ]);
         const sessionIdentityCurrent = sessionValidated && sessionLock !== null && sessionIdentityAtSample === lockIdentity && sessionIdentityEpochAtSample === login1SessionEpoch;
         const sessionFactsCurrent = sessionIdentityCurrent && sessionFactsEpochAtSample === login1FactsEpoch;
-        const activitySignalCurrent = activitySerialAtSample === activitySerial && activityAtSample === activityAt;
-        const currentActivity = activitySignalCurrent ? activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch, sessionIdentityCurrent) : null;
+        const currentActivity = currentActivityForSample(activityObservation, activityObservationEpoch, activitySampleEpoch, activitySerialAtSample, activityAtSample, activitySuspendedAtSample, sessionIdentityCurrent);
         const logical = topology[2];
         if (!Array.isArray(logical)) throw Error();
         // Do not persist monitor names/serials. Geometry and connector count suffice for continuity.
@@ -216,22 +246,24 @@ async function observe() {
         } else {
             // ScreenSaver.GetActive is screen-shield activity, not proof of locking.
             // GNOME writes actual lock state to login1 Session.LockedHint.
-            const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: currentActivity?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: sessionLock!.locked, shieldActive: shield[0], suspended: currentActivity?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
-            if (lastLease && identity()) write({ version: 1, at: Date.now(), observation, activity: currentActivity });
+            const inputAge = currentActivity?.inputOnly === true && typeof currentActivity.activityAt === "number" && Number.isFinite(currentActivity.activityAt)
+                ? Math.max(0, Date.now() - currentActivity.activityAt)
+                : null;
+            const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: inputAge ?? currentActivity?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: sessionLock!.locked, shieldActive: shield[0], suspended: currentActivity?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
+            if (lastLease && identity()) write({ at: Date.now(), observation, activity: currentActivity });
         }
     } catch {
         provider++;
         const sessionIdentityCurrent = sessionValidated && sessionLock !== null && sessionIdentityAtSample === lockIdentity && sessionIdentityEpochAtSample === login1SessionEpoch;
         const sessionFactsCurrent = sessionIdentityCurrent && sessionFactsEpochAtSample === login1FactsEpoch;
-        const activitySignalCurrent = activitySerialAtSample === activitySerial && activityAtSample === activityAt;
-        const currentActivity = activitySignalCurrent ? activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch, sessionIdentityCurrent) : null;
-        write({ version: 1, at: Date.now(), observation: null, activity: currentActivity, reason: sessionFactsCurrent ? "display_provider_unavailable" : "session_unavailable" });
+        const currentActivity = currentActivityForSample(activityObservation, activityObservationEpoch, activitySampleEpoch, activitySerialAtSample, activityAtSample, activitySuspendedAtSample, sessionIdentityCurrent);
+        write({ at: Date.now(), observation: null, activity: currentActivity, reason: sessionFactsCurrent ? "display_provider_unavailable" : "session_unavailable" });
     }
     finally {
         busy = false;
         const refreshActivity = observeAfterCurrent;
         observeAfterCurrent = false;
-        if (refreshActivity && lastLease && identity()) void observe();
+        if (refreshActivity && lastLease && identity()) requestObserve();
     }
 }
 function startSubscriptions() {

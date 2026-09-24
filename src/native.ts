@@ -10,6 +10,7 @@ import { app, dialog, IpcMainInvokeEvent } from "electron";
 import { lstat, mkdir, writeFile } from "fs/promises";
 import { isAbsolute, join } from "path";
 
+import { validateDetectorSnapshot } from "./core/detectorSnapshot";
 import { displayFacts } from "./core/displayFacts";
 import { mergeHistory, retain } from "./core/history";
 import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
@@ -42,6 +43,10 @@ function validEvent(event: unknown): event is HistoryEvent {
         && typeof e.reason === "string" && e.reason.length <= 240
         && [e.display, e.camera, ...(e.activity ? [e.activity] : [])].every(s => s && ["active", "inactive", "unknown"].includes(s.value) && Number.isFinite(s.at) && typeof s.reason === "string" && s.reason.length <= 240 && typeof s.scope === "string" && s.scope.length <= 180)
         && (e.nativeIdleAttributed === undefined || typeof e.nativeIdleAttributed === "boolean")
+        && (e.importance === undefined || ["control", "detector"].includes(e.importance))
+        && (e.repeatCount === undefined || Number.isInteger(e.repeatCount) && e.repeatCount >= 1 && e.repeatCount <= 1_000_000_000)
+        && (e.firstAt === undefined || Number.isFinite(e.firstAt) && e.firstAt <= e.at)
+        && (e.lastAt === undefined || Number.isFinite(e.lastAt) && e.lastAt === e.at)
         && (e.saveState === undefined || ["pending", "succeeded", "failed", "unavailable"].includes(e.saveState))
         && (e.display.facts === undefined || displayFacts(e.display.facts) !== undefined)
         && JSON.stringify(e).length < 4096;
@@ -51,7 +56,7 @@ async function history(): Promise<HistoryEvent[]> {
         const data = await bounded(join(directory, "history.json"), 2 * 1024 * 1024);
         if (!Array.isArray(data) || !data.every(validEvent)) throw Error("malformed_history");
         const kept = retain(data, Date.now());
-        if (kept.length !== data.length) await atomic("history.json", kept);
+        if (JSON.stringify(kept) !== JSON.stringify(data)) await atomic("history.json", kept);
         return kept;
     } catch (e) {
         if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -62,9 +67,9 @@ export async function readHistory(_: IpcMainInvokeEvent) { return serial(history
 export async function appendHistory(_: IpcMainInvokeEvent, event: HistoryEvent) {
     if (!validEvent(event)) throw Error("invalid_history_event");
     // Reconstruct fields to discard unknown renderer-supplied properties.
-    const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, nativeIdleAttributed, activity, saveState, display, camera } = event;
+    const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, importance, repeatCount, firstAt, lastAt, nativeIdleAttributed, activity, saveState, display, camera } = event;
     const signal = (s: typeof display) => ({ at: s.at, value: s.value, reason: s.reason, scope: s.scope });
-    return serial(async () => atomic("history.json", mergeHistory(await history(), [{ at, kind, source, previous, status: current, configured, aggregate, reason, owned, nativeIdleAttributed, activity: activity ? signal(activity) : undefined, saveState, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
+    return serial(async () => atomic("history.json", mergeHistory(await history(), [{ at, kind, source, previous, status: current, configured, aggregate, reason, owned, importance, repeatCount, firstAt, lastAt, nativeIdleAttributed, activity: activity ? signal(activity) : undefined, saveState, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
 }
 export async function clearHistory(_: IpcMainInvokeEvent) { return serial(() => atomic("history.json", [])); }
 export async function exportHistory(_: IpcMainInvokeEvent) {
@@ -78,29 +83,13 @@ export async function lease(_: IpcMainInvokeEvent, enabled: boolean) {
     if (typeof enabled !== "boolean") throw Error("invalid_lease");
     return serial(() => atomic("lease.json", { enabled, at: Date.now() }));
 }
-export async function displaySnapshot(_: IpcMainInvokeEvent) {
+export async function detectorSnapshot(_: IpcMainInvokeEvent) {
     try {
         const config = await bounded(join(directory, "installation.json"), 4096);
-        if (typeof config.snapshot !== "string" || !isAbsolute(config.snapshot)) return null;
+        if (typeof config.snapshot !== "string" || !isAbsolute(config.snapshot)) return validateDetectorSnapshot(null, Date.now(), "snapshot_path_unavailable");
         const snapshot = await bounded(config.snapshot, 8192);
-        if (snapshot.version !== 1 || !Number.isFinite(snapshot.at) || Date.now() < snapshot.at || Date.now() - snapshot.at > 10000) return null;
-        return snapshot.observation ?? null;
-    } catch { return null; }
-}
-export async function activitySnapshot(_: IpcMainInvokeEvent) {
-    try {
-        const config = await bounded(join(directory, "installation.json"), 4096);
-        if (typeof config.snapshot !== "string" || !isAbsolute(config.snapshot)) return null;
-        const snapshot = await bounded(config.snapshot, 8192);
-        const { activity } = snapshot;
-        if (snapshot.version !== 1 || !Number.isFinite(snapshot.at) || Date.now() < snapshot.at || Date.now() - snapshot.at > 10000
-            || !activity || !Number.isFinite(activity.at) || Date.now() < activity.at || Date.now() - activity.at > 10000
-            || !Number.isFinite(activity.idleMs) || activity.idleMs < 0 || typeof activity.suspended !== "boolean"
-            || typeof activity.provider !== "string" || !activity.provider || activity.provider.length > 512
-            || !Number.isInteger(activity.activitySerial) || activity.activitySerial < 0
-            || !Number.isFinite(activity.activityAt) || activity.activityAt < 0 || activity.activityAt > activity.at) return null;
-        return activity;
-    } catch { return null; }
+        return validateDetectorSnapshot(snapshot);
+    } catch { return validateDetectorSnapshot(null, Date.now(), "snapshot_unavailable"); }
 }
 export async function pipeWireSnapshot(_: IpcMainInvokeEvent): Promise<string | null> {
     if (pwBusy) return null;
@@ -114,11 +103,19 @@ export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {
     const v = value as Record<string, unknown>;
     // Fixed keys only. Account IDs and arbitrary renderer objects are never persisted here.
     const result: Record<string, unknown> = { at: Date.now() };
-    for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "activityReason", "activityValue", "cameraReason", "patchError", "storageHealth", "saveState"]) {
+    for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "activityReason", "activityValue", "activityContinuityReason", "cameraReason", "patchError", "storageHealth", "saveState", "helperSnapshotHealth", "pendingWritePhase", "configuredSignatureHealth"]) {
         if (typeof v[key] === "string") result[key] = (v[key] as string).slice(0,240);
     }
-    for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "nativeIdleHook", "nativeIdleAttributed", "saveHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive"]) {
+    for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "nativeIdleHook", "nativeIdleAttributed", "saveHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive", "helperLeaseHealthy"]) {
         result[key] = typeof v[key] === "boolean" ? v[key] : null;
+    }
+    for (const key of ["activityIdleMs", "activitySampleAgeMs", "helperSnapshotSequence", "helperSnapshotAgeMs", "idleRemainingMs"]) {
+        result[key] = typeof v[key] === "number" && Number.isFinite(v[key]) ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, v[key])) : null;
+    }
+    if (Array.isArray(v.pausedRules)) {
+        result.pausedRules = v.pausedRules.slice(0, 2).flatMap((entry: any) => entry && ["idle", "camera"].includes(entry.rule) && typeof entry.reason === "string" && Number.isFinite(entry.at)
+            ? [{ rule: entry.rule, reason: entry.reason.slice(0, 120), at: entry.at }]
+            : []);
     }
     await serial(() => atomic("diagnostics.json", result));
 }
