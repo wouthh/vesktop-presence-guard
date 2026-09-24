@@ -56,13 +56,18 @@ export function parseStatusProto(proto: unknown): ParsedStatusProto {
     if (!object(proto)) return { shape: "none", mentionsStatus: false, hasStatus: false, configured: "unknown", hasDuration: false, hasExpiresAtMs: false, hasCreatedAtMs: false };
     const outerStatus = proto.status;
     const group = object(outerStatus) ? outerStatus : null;
+    const groupFieldPresent = !!group && Object.hasOwn(group, "value");
+    const rootContainerPresent = !!group && Object.hasOwn(group, "status");
     const nestedStatus = group && object(group.status) ? group.status : null;
-    const groupConfigured = group && Object.hasOwn(group, "value") ? normalizeConfiguredStatus(group) : "unknown";
-    const rootConfigured = nestedStatus && Object.hasOwn(nestedStatus, "value") ? normalizeConfiguredStatus(nestedStatus) : "unknown";
-    const groupShape = groupConfigured !== "unknown";
-    const rootShape = rootConfigured !== "unknown";
+    const rootFieldPresent = !!nestedStatus && Object.hasOwn(nestedStatus, "value");
+    const groupConfigured = groupFieldPresent ? normalizeConfiguredStatus(group) : "unknown";
+    const rootConfigured = rootFieldPresent ? normalizeConfiguredStatus(nestedStatus) : "unknown";
+    const groupShape = groupFieldPresent;
+    const rootShape = rootFieldPresent;
     const mentionsStatus = Object.hasOwn(proto, "status");
-    if (groupShape && rootShape) {
+    const invalidGroup = groupFieldPresent && groupConfigured === "unknown";
+    const invalidRoot = rootContainerPresent && (!nestedStatus || !rootFieldPresent || rootConfigured === "unknown");
+    if (invalidGroup || invalidRoot || groupFieldPresent && rootContainerPresent) {
         return { shape: "unsupported", mentionsStatus: true, hasStatus: false, configured: "unknown", hasDuration: false, hasExpiresAtMs: false, hasCreatedAtMs: false };
     }
     if (!groupShape && !rootShape) {

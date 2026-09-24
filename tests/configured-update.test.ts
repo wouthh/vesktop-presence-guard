@@ -42,7 +42,11 @@ test("picker expiry correlation accepts the immediate local write and rejects an
 });
 test("status-only picker updates match only selections without a duration", () => {
     assert.equal(matchesManualSelectionExpiry(0, false, undefined), true);
+    assert.equal(matchesManualSelectionExpiry(0, true, null), true);
+    assert.equal(matchesManualSelectionExpiry(0, true, "0"), true);
+    assert.equal(matchesManualSelectionExpiry(0, true, "1200"), false);
     assert.equal(matchesManualSelectionExpiry(3_600_000, false, undefined), false);
+    assert.equal(matchesManualSelectionExpiry(3_600_000, true, null), false);
     assert.equal(matchesManualSelectionExpiry(3_600_000, true, 3_600_500), true);
 });
 test("ordinary full snapshots, aggregate presence and session events do not prove a manual selection", () => {

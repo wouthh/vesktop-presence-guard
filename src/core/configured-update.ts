@@ -38,7 +38,9 @@ export function matchesManualExpiry(expected: number, actual: unknown) {
 
 /** A picker choice without a duration is represented by a status-only update. */
 export function matchesManualSelectionExpiry(expected: number, hasExpiry: boolean, actual: unknown) {
-    return hasExpiry ? matchesManualExpiry(expected, actual) : expected === 0;
+    if (!hasExpiry) return expected === 0;
+    if (expected === 0) return actual === null || actual === 0 || actual === "0";
+    return matchesManualExpiry(expected, actual);
 }
 
 /** Detect an observable configured-setting mutation without inferring from presence events. */

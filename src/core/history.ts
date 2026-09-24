@@ -73,12 +73,12 @@ export async function loadHistoryView(view: HistoryView, readNative: () => Promi
     if (current()) view.set(mergeHistory(history, view.get(), now()));
 }
 
-export async function clearHistoryView(view: HistoryView, clearNative: () => Promise<unknown>, reloadOnFailure: () => Promise<unknown> = async () => {}): Promise<void> {
+export async function clearHistoryView(view: HistoryView, clearNative: () => Promise<unknown>, reloadOnFailure: () => Promise<unknown> = async () => {}, now: () => number = Date.now): Promise<void> {
     const before = view.get();
     view.set([]);
     try { await clearNative(); } catch (error) {
-        view.set([...before, ...view.get()]);
-        await reloadOnFailure();
+        view.set(retain([...before, ...view.get()], now()));
+        try { await reloadOnFailure(); } catch { /* Keep bounded in-memory history when storage is unavailable. */ }
         throw error;
     }
 }

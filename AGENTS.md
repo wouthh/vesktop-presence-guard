@@ -40,8 +40,11 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   visible and pause the affected rule.
 - Parse only supported configured-status group/root envelopes and wrappers;
   group-level or root-level duration metadata is accepted when unambiguous, and
-  unknown required shapes fail closed. Save acknowledgements require one exact
-  queued updater operation with compatible parsed status/duration evidence;
+  malformed or competing status locations and unknown required shapes fail
+  closed. A no-duration picker selection may correlate with an explicit null
+  or zero expiry, but never with a nonzero duration. Save acknowledgements
+  require one exact queued updater operation with compatible parsed
+  status/duration evidence;
   ambiguous, unparseable, or mismatched evidence never counts as success, while
   candidate tokens remain attached so terminal outcomes pause affected rules.
 - Retain no more than 500 history events for seven days, reserving 400 for
@@ -52,6 +55,8 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   status-observation reasons migrate into the control reservation. Detector
   caps select by latest occurrence, in-flight append identity stays stable, and
   events recorded during Clear survive while prior visible history is removed.
+  A failed Clear restores through the same retention limits before attempting
+  a best-effort storage reload, so a reload failure cannot expand memory history.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.

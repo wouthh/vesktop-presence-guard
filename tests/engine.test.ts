@@ -410,7 +410,7 @@ test("disabling an awaiting camera transition preserves an enabled Idle owner", 
 test("history clear keeps events recorded after the serialized clear request", async () => {
     const f = fixture(); f.engine.sample(); const original = f.history.find(event => event.importance === "detector")!;
     let view = [original]; let release!: () => void;
-    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }));
+    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }), async () => {}, () => original.at + 1);
     assert.deepEqual(view, []);
     const later = { ...original, at: original.at + 1 };
     view = retain([...view, later], later.at);
@@ -425,9 +425,25 @@ test("failed clear reloads retained startup history and preserves events receive
     const view = { get: () => events, set: (value: HistoryEvent[]) => { events = value; } };
     const startup = loadHistoryView(view, () => new Promise(r => { release = r; }), () => generation === 0, () => recent.at);
     generation++;
-    await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at)), /read_only_storage/);
+    await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at), () => recent.at), /read_only_storage/);
     assert.equal(events.length, 2);
     assert.deepEqual(events.map(event => event.at), [old.at, recent.at]);
+});
+
+test("failed clear remains bounded when its storage reload also fails", async () => {
+    const f = fixture(); f.engine.sample(); const base = f.history[0], now = f.now();
+    const makeWindow = (prefix: string, end: number) => [
+        ...Array.from({ length: 400 }, (_, i) => ({ ...base, at: end - 500 + i, kind: "request" as const, reason: `${prefix}_control_${i}`, importance: "control" as const })),
+        ...Array.from({ length: 100 }, (_, i) => ({ ...base, at: end - 100 + i, reason: `${prefix}_detector_${i}`, importance: "detector" as const }))
+    ];
+    let view: HistoryEvent[] = makeWindow("before", now), rejectClear!: (error: Error) => void;
+    const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise((_, reject) => { rejectClear = reject; }), async () => { throw Error("storage_read_failed"); }, () => now);
+    view = makeWindow("during", now);
+    rejectClear(Error("storage_clear_failed"));
+    await assert.rejects(clearing, /storage_clear_failed/);
+    assert.equal(view.length, 500);
+    assert.equal(view.filter(event => event.importance === "control").length, 400);
+    assert.equal(view.filter(event => event.importance === "detector").length, 100);
 });
 
 for (const choice of ["idle", "dnd", "invisible", "unknown"] as const) test(`pending manual ${choice} blocks acquisition from the old Online preference`, async () => {

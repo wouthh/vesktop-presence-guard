@@ -36,6 +36,12 @@ test("status-only nested updates are supported and unknown status shapes fail cl
     assert.equal(parseStatusProto({ status: { unexpected: "idle" } }).shape, "unsupported");
 });
 
+test("invalid or competing status locations fail closed even when another location is valid", () => {
+    assert.equal(parseStatusProto({ status: { value: "future-status", status: { value: "idle" } } }).shape, "unsupported");
+    assert.equal(parseStatusProto({ status: { value: "idle", status: { value: "future-status" } } }).shape, "unsupported");
+    assert.equal(parseStatusProto({ status: { status: "malformed", value: "idle" } }).shape, "unsupported");
+});
+
 test("configured status signatures normalize wrappers and include duration edits", () => {
     const initial = configuredStatusSignature({ value: "idle" }, { value: "1000" }, { value: 500 });
     const edited = configuredStatusSignature("idle", "2000", "500");
