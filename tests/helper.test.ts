@@ -21,7 +21,8 @@ test("production helper enters its loop before quitting for an already-exited pa
 
 test("production helper re-reads sleep state after a resume signal missed without a lease", async () => {
     const source = buildSync({ entryPoints: ["helper/display-helper.ts"], bundle: true, write: false, format: "cjs", platform: "neutral", external: ["gi://Gio", "gi://GioUnix", "gi://GLib", "gi://GLibUnix"] }).outputFiles[0].text;
-    let enabled = true, sleeping = true, regularLease = true, loginSessionUnavailable = false, sessionId = "synthetic-session", deferDisplayQuery = false, releaseDisplayQuery: (() => void) | null = null, snapshot: any, tick!: () => void;
+    let enabled = true, sleeping = true, regularLease = true, loginSessionUnavailable = false, sessionId = "synthetic-session", deferDisplayQuery = false, releaseDisplayQuery: (() => void) | null = null, desktopIdleMs = 0, snapshot: any, tick!: () => void;
+    const snapshots: any[] = [];
     const idle: (() => void)[] = [], subscriptions = new Map<number, { name: string; signal: string; path: string | null; fn: (...args: any[]) => void }>(); let next = 1, nextWatch = 0;
     const removedWatches: { owner: string; path: string; id: number }[] = [];
     const descriptors = new Map<number, string>(); let nextFd = 10;
@@ -29,7 +30,7 @@ test("production helper re-reads sleep state after a resume signal missed withou
     const bus = {
         call: (name: string, path: string, _iface: string, method: string, params: Variant | null, _reply: unknown, _flags: unknown, _timeout: unknown, _cancel: unknown, callback: (bus: unknown, result: any) => void) => {
             if (method === "GetAll" && loginSessionUnavailable) { queueMicrotask(() => callback(null, { failed: true })); return; }
-            const value = method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: sessionId }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "GetSession" ? [sessionId === "synthetic-session" ? "/org/freedesktop/login1/session/_synthetic" : "/org/freedesktop/login1/session/_replacement"] : method === "AddUserActiveWatch" ? [++nextWatch] : method === "RemoveWatch" ? [removedWatches.push({ owner: name, path, id: Number(params?.value[0]) })] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
+            const value = method === "GetIdletime" ? [desktopIdleMs] : method === "GetAll" ? [Object.fromEntries(Object.entries({ User: [777, "/synthetic/user"], Active: true, Type: "wayland", Class: "user", LockedHint: false, Id: sessionId }).map(([key, value]) => [key, new Variant("v", value)]))] : method === "GetSession" ? [sessionId === "synthetic-session" ? "/org/freedesktop/login1/session/_synthetic" : "/org/freedesktop/login1/session/_replacement"] : method === "AddUserActiveWatch" ? [++nextWatch] : method === "RemoveWatch" ? [removedWatches.push({ owner: name, path, id: Number(params?.value[0]) })] : method === "Get" ? [new Variant("v", params?.value[1] === "PreparingForSleep" ? sleeping : 0)]
                 : method === "GetCurrentState" ? [0, [], [[0, 0, 1, 0, false, ["synthetic"]]]]
                     : method === "GetActive" ? [false] : method === "GetNameOwner" ? [params?.value[0] === "org.gnome.Mutter.IdleMonitor" ? ":1.20" : params?.value[0] === "org.freedesktop.login1" ? ":1.5" : "synthetic-provider"] : [0];
             const result = { deepUnpack: () => value };
@@ -46,7 +47,7 @@ test("production helper re-reads sleep state after a resume signal missed withou
         idle_add: (_: unknown, fn: () => void) => idle.push(fn), timeout_add_seconds: (_: unknown, _seconds: number, fn: () => void) => { tick = fn; return 1; }, source_remove: () => {},
         open: (path: string) => { const fd = nextFd++; descriptors.set(fd, path); return fd; }
     };
-    const gio = { Credentials: class { get_unix_user() { return 777; } }, DBus: { session: bus, system: bus }, DBusCallFlags: { NO_AUTO_START: 1 }, DBusSignalFlags: { NONE: 0 }, Settings: class { get_uint() { return 300; } }, FileType: { REGULAR: 1 }, FileQueryInfoFlags: { NONE: 0 }, File: { new_for_path: (path: string) => ({ query_info: () => ({ get_file_type: () => descriptors.get(Number(path.split("/").at(-1)))?.startsWith("/proc/") || regularLease ? 1 : 4, get_size: () => 0 }), replace_contents: (bytes: Uint8Array) => { snapshot = JSON.parse(new TextDecoder().decode(bytes)); } }) }, FileCreateFlags: { PRIVATE: 1, REPLACE_DESTINATION: 2 } };
+    const gio = { Credentials: class { get_unix_user() { return 777; } }, DBus: { session: bus, system: bus }, DBusCallFlags: { NO_AUTO_START: 1 }, DBusSignalFlags: { NONE: 0 }, Settings: class { get_uint() { return 300; } }, FileType: { REGULAR: 1 }, FileQueryInfoFlags: { NONE: 0 }, File: { new_for_path: (path: string) => ({ query_info: () => ({ get_file_type: () => descriptors.get(Number(path.split("/").at(-1)))?.startsWith("/proc/") || regularLease ? 1 : 4, get_size: () => 0 }), replace_contents: (bytes: Uint8Array) => { snapshot = JSON.parse(new TextDecoder().decode(bytes)); snapshots.push(snapshot); } }) }, FileCreateFlags: { PRIVATE: 1, REPLACE_DESTINATION: 2 } };
     const gioUnix = { InputStream: class {
         fd: number; constructor({ fd }: { fd: number }) { this.fd = fd; }
         read_bytes() { const path = descriptors.get(this.fd)!; assert(path.startsWith("/proc/") || regularLease, "must not read a non-regular lease"); return { get_data: () => new TextEncoder().encode(path.startsWith("/proc/") ? `123 (synthetic) ${Array.from({ length: 20 }, (_, i) => i === 19 ? "456" : "0").join(" ")}` : JSON.stringify({ enabled, at: Date.now() })) }; }
@@ -64,6 +65,16 @@ test("production helper re-reads sleep state after a resume signal missed withou
     const watchFired = [...subscriptions.values()].find(subscription => subscription.name === "org.gnome.Mutter.IdleMonitor" && subscription.signal === "WatchFired")!.fn;
     watchFired(null, ":1.20", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "WatchFired", new Variant("(u)", [nextWatch])); await flush();
     assert.equal(snapshot.activity.activitySerial, 1); // The first brief input after rearm is retained.
+    const watchDuringPoll = nextWatch;
+    desktopIdleMs = 300_000; deferDisplayQuery = true; tick(); await flush(); assert.equal(typeof releaseDisplayQuery, "function");
+    const beforeActivityRace = snapshots.length;
+    desktopIdleMs = 0;
+    watchFired(null, ":1.20", "/org/gnome/Mutter/IdleMonitor/Core", "org.gnome.Mutter.IdleMonitor", "WatchFired", new Variant("(u)", [watchDuringPoll]));
+    releaseDisplayQuery!(); releaseDisplayQuery = null; await flush();
+    const raceSnapshots = snapshots.slice(beforeActivityRace);
+    assert.equal(raceSnapshots[0]?.activity, null); // The pre-input counter cannot publish across the watch event.
+    assert.equal(raceSnapshots.at(-1)?.activity?.idleMs, 0); // The queued fresh sample retains the brief input.
+    assert.equal(raceSnapshots.at(-1)?.activity?.activitySerial, 2);
     const loginProperties = [...subscriptions.values()].find(subscription => subscription.name === "org.freedesktop.login1" && subscription.signal === "PropertiesChanged")!.fn;
     deferDisplayQuery = true; tick(); await flush(); assert.equal(typeof releaseDisplayQuery, "function");
     loginProperties(null, ":1.5", "/org/freedesktop/login1/session/_replacement", "org.freedesktop.DBus.Properties", "PropertiesChanged", new Variant("(sa{sv}as)", ["org.freedesktop.login1.Session", { Id: new Variant("s", "new-session") }, []]));

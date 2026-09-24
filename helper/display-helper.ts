@@ -46,6 +46,7 @@ let activeWatch: number | null = null;
 let activeWatchOwner = "";
 let activeWatchEpoch = -1;
 let watchBusy = false;
+let observeAfterCurrent = false;
 const pendingActiveSignals = new Set<number>();
 const uid = new Gio.Credentials().get_unix_user();
 const ids: { bus: any; id: number }[] = [];
@@ -77,7 +78,11 @@ async function addUserActiveWatch() {
         rearm = lastLease && identity() && !!idleMonitorOwner
             && !watchRegistrationIsCurrent(requestedOwner, requestedEpoch, idleMonitorOwner, activityProviderEpoch);
     }
-    finally { watchBusy = false; if (rearm && lastLease) { void observe(); void addUserActiveWatch(); } }
+    finally { watchBusy = false; if (rearm && lastLease) { requestObserve(); void addUserActiveWatch(); } }
+}
+function requestObserve() {
+    if (busy) observeAfterCurrent = true;
+    void observe();
 }
 async function removeUserActiveWatch() {
     const id = activeWatch;
@@ -116,6 +121,8 @@ async function observe() {
     let sessionIdentityAtSample: string | null = null;
     let sessionValidated = false;
     const activitySampleEpoch = activityProviderEpoch;
+    const activitySerialAtSample = activitySerial;
+    const activityAtSample = activityAt;
     const sessionIdentityEpochAtSample = login1SessionEpoch;
     const sessionFactsEpochAtSample = login1FactsEpoch;
     try {
@@ -177,7 +184,7 @@ async function observe() {
             if (lastLease && idleMonitorOwner) void addUserActiveWatch();
             if (sessionValidated && activitySampleEpoch === activityProviderEpoch) {
                 activityObservationEpoch = activitySampleEpoch;
-                activityObservation = { at: Date.now(), idleMs: Number(idle[0]), suspended: sleep[0].deepUnpack(), provider: `${idleMonitorOwner}:${instance}:${activityObservationEpoch}`, activitySerial, activityAt };
+                activityObservation = { at: Date.now(), idleMs: Number(idle[0]), suspended: sleep[0].deepUnpack(), provider: `${idleMonitorOwner}:${instance}:${activityObservationEpoch}`, activitySerial: activitySerialAtSample, activityAt: activityAtSample };
             }
         } else {
             activityProviderEpoch++; activitySerial = 0; activityAt = 0; idleMonitorOwner = "";
@@ -198,7 +205,8 @@ async function observe() {
         ]);
         const sessionIdentityCurrent = sessionValidated && sessionLock !== null && sessionIdentityAtSample === lockIdentity && sessionIdentityEpochAtSample === login1SessionEpoch;
         const sessionFactsCurrent = sessionIdentityCurrent && sessionFactsEpochAtSample === login1FactsEpoch;
-        const currentActivity = activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch, sessionIdentityCurrent);
+        const activitySignalCurrent = activitySerialAtSample === activitySerial && activityAtSample === activityAt;
+        const currentActivity = activitySignalCurrent ? activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch, sessionIdentityCurrent) : null;
         const logical = topology[2];
         if (!Array.isArray(logical)) throw Error();
         // Do not persist monitor names/serials. Geometry and connector count suffice for continuity.
@@ -215,10 +223,16 @@ async function observe() {
         provider++;
         const sessionIdentityCurrent = sessionValidated && sessionLock !== null && sessionIdentityAtSample === lockIdentity && sessionIdentityEpochAtSample === login1SessionEpoch;
         const sessionFactsCurrent = sessionIdentityCurrent && sessionFactsEpochAtSample === login1FactsEpoch;
-        const currentActivity = activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch, sessionIdentityCurrent);
+        const activitySignalCurrent = activitySerialAtSample === activitySerial && activityAtSample === activityAt;
+        const currentActivity = activitySignalCurrent ? activityForCurrentEpoch(activityObservation, activityObservationEpoch, activityProviderEpoch, sessionIdentityCurrent) : null;
         write({ version: 1, at: Date.now(), observation: null, activity: currentActivity, reason: sessionFactsCurrent ? "display_provider_unavailable" : "session_unavailable" });
     }
-    finally { busy = false; }
+    finally {
+        busy = false;
+        const refreshActivity = observeAfterCurrent;
+        observeAfterCurrent = false;
+        if (refreshActivity && lastLease && identity()) void observe();
+    }
 }
 function startSubscriptions() {
     subscribe(system, "org.freedesktop.login1", "org.freedesktop.DBus.Properties", "PropertiesChanged", null, (...args: any[]) => {
@@ -266,14 +280,14 @@ function startSubscriptions() {
         activeWatchOwner = "";
         activeWatchEpoch = -1;
         if (watchEpoch !== activityProviderEpoch || watchOwner !== idleMonitorOwner) {
-            void observe();
+            requestObserve();
             if (lastLease && idleMonitorOwner) void addUserActiveWatch();
             return;
         }
         activitySerial++;
         activityAt = Date.now();
         void addUserActiveWatch();
-        void observe();
+        requestObserve();
     });
 }
 function unsubscribe() {
