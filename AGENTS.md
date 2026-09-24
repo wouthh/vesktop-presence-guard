@@ -50,14 +50,29 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   candidate, never an unreported success;
   ambiguous, unparseable, or mismatched evidence never counts as success, while
   candidate tokens remain attached so terminal outcomes pause affected rules.
+- Resolve status writes from the raw settings updater whose numeric type is 1
+  and whose `ProtoClass.typeName` is exactly
+  `discord_protos.discord_users.v1.PreloadedUserSettings`. Validate current
+  status field descriptors and update/save patch fingerprints before enabling
+  writes. Never select by generic method presence: favourites settings share
+  those methods. Keep the same raw receiver through loading, mutation and save
+  correlation, and accept status events/save callbacks only from that verified
+  type-1 instance.
+- Keep a bounded allowlist-only last-write diagnostic with operation number,
+  target, phase, timestamps, outcome and classified error code. Do not persist
+  exception text, settings, responses or account identifiers. Ordinary decision
+  skips belong in detector history; requests, cancellations, confirmations,
+  saves, failures, manual boundaries and ownership changes use control history.
+  Migrate only known repetitive legacy skip reasons out of the control
+  reservation, while retaining legacy status observations there.
 - Retain no more than 500 history events for seven days, reserving 400 for
   status/control and 100 for coalesced detector summaries. Status changes use
-  the control reservation; activity, display, and camera uncertainty-reason
-  changes remain distinct bounded detector summaries. Persisted-event
+  the control reservation; ordinary decision skips and activity, display, and
+  camera uncertainty-reason changes use bounded detector summaries. Persisted-event
   deduplication includes activity evidence and native Idle attribution; legacy
   status-observation reasons migrate into the control reservation. Detector
-  caps select by latest occurrence; detector-only skips caused solely by
-  display/camera reason changes use the detector reservation. Overlapping
+  caps select by latest occurrence; known repetitive legacy skips migrate into
+  the detector reservation. Overlapping
   summaries use the greater repeat count because individual occurrences are not
   retained; disjoint ranges add. In-flight append identity stays stable, and
   events recorded during Clear survive while prior visible history is removed.
@@ -83,7 +98,9 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 scan, helper build, and pinned upstream plugin integration. `pnpm test` is the
 focused engine/detector/adapter gate. `pnpm exec tsx scripts/check-client.ts`
 with an explicit local public-client script checks patch compatibility without
-executing client code. Physical camera/display cycles require human smoke tests.
+executing client code; the current public-client schema check must also confirm
+the PreloadedUserSettings status descriptors and update path. Physical
+camera/display cycles require human smoke tests.
 
 Bootstrap `main`, then use a feature branch. Preserve dirty work; no reset,
 stash, rebase, amend, or force-push. Use normal commits and a ready PR after

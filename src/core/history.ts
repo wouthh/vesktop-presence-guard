@@ -12,10 +12,34 @@ export const MAX_CONTROL_EVENTS = 400;
 export const MAX_DETECTOR_EVENTS = 100;
 const COALESCE_WINDOW_MS = 15 * 60 * 1_000;
 const LEGACY_CONTROL_OBSERVATIONS = new Set(["status_observed", "configured_online_observed_native_idle"]);
+// Older builds stored these poll-driven decisions in the control partition.
+// Reclassify only the known decision vocabulary; requests, mutations, manual
+// boundaries, cancellations, confirmations, saves and failures stay protected.
+const LEGACY_REPETITIVE_DECISIONS = new Set([
+    "automation_paused",
+    "no_change_needed",
+    "manual_selection_awaiting_configured_status",
+    "non_owned_or_uncertain_status",
+    "owned_configured_status_changed",
+    "camera_sample_from_previous_epoch",
+    "camera_unknown_no_release",
+    "native_idle_hook_not_ready",
+    "effective_idle_not_attributed_to_native",
+    "effective_presence_uncertain",
+    "activity_sample_from_previous_epoch",
+    "activity_data_missing_or_stale",
+    "activity_data_missing_or_stale_no_release",
+    "owned_rule_paused_after_write_failure",
+    "return_not_confirmed"
+]);
 
 function importance(event: HistoryEvent) {
+    if (event.kind === "skip" && LEGACY_REPETITIVE_DECISIONS.has(event.reason)) return "detector";
     if (event.importance) return event.importance;
     if (event.kind === "observation" && LEGACY_CONTROL_OBSERVATIONS.has(event.reason)) return "control";
+    // New engine skips carry an explicit detector/control classification.
+    // Older untagged skips remain control unless they match the narrow legacy
+    // repetitive-decision allowlist above.
     return event.kind === "observation" || event.kind === "simulation" ? "detector" : "control";
 }
 
@@ -28,11 +52,12 @@ function combineDetectorEvents(events: HistoryEvent[]) {
     const output: HistoryEvent[] = [];
     const indexes = new Map<string, number>();
     for (const input of events) {
-        if (importance(input) !== "detector") {
-            output.push(input.importance ? input : { ...input, importance: "control" });
+        const effectiveImportance = importance(input);
+        if (effectiveImportance !== "detector") {
+            output.push(input.importance === "control" ? input : { ...input, importance: "control" });
             continue;
         }
-        const event = input.importance ? input : { ...input, importance: "detector" as const };
+        const event = input.importance === "detector" ? input : { ...input, importance: "detector" as const };
         const key = detectorKey(event);
         const index = indexes.get(key);
         if (index === undefined) {

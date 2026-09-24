@@ -8,7 +8,7 @@ import { definePluginSettings } from "@api/Settings";
 import { getUserSettingLazy } from "@api/UserSettings";
 import { openModal } from "@utils/modal";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
-import { findByCode, findByProps, findModuleId, findStoreLazy, wreq } from "@webpack";
+import { find, findByCode, findByProps, findModuleId, findStoreLazy, wreq } from "@webpack";
 import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, UserStore, useState } from "@webpack/common";
 
 import { BUILD_INFO } from "./buildInfo";
@@ -20,12 +20,12 @@ import { describeDisplayFacts } from "./core/displayFacts";
 import { PresenceEngine } from "./core/engine";
 import { clearHistoryView, loadHistoryView, retain } from "./core/history";
 import { HistoryWriter } from "./core/historyWriter";
-import { statusMutator } from "./core/mutator";
 import { isNativeAutomaticIdle } from "./core/native-idle";
 import { PersistenceHealth } from "./core/persistenceHealth";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
 import { configuredStatusSignature, parseStatusProto } from "./core/statusProto";
+import { hasUpdaterMethods, isStatusSettingsEventType, resolveStatusUpdater, StatusWriteTrace, updaterCandidatePredicate, type UpdaterReadiness, writeConfiguredStatus } from "./core/statusUpdater";
 import { CameraTracks } from "./core/tracks";
 import { fresh, HistoryEvent, Options, Snapshot, status, UNKNOWN, WriteToken } from "./core/types";
 import { actionPatch, cameraPatch, nativeIdlePatch, protoPatch, saveLifecyclePatch, selectionPatch } from "./patches";
@@ -59,7 +59,10 @@ let cameraHook = false;
 let cameraContinuity = true;
 let connectionFresh = false;
 let patchError = "starting";
-let updater: any;
+let updater: any = undefined;
+let updaterReadiness: UpdaterReadiness = "not_found";
+let updaterType: number | null = null;
+const statusWriteTrace = new StatusWriteTrace();
 let nativeIdleHook = false;
 let nativeIdleReconcile: (() => void) | undefined;
 let nativeIdlePendingUntil = 0;
@@ -119,6 +122,25 @@ function record(event: HistoryEvent) {
 }
 function persistPending() { return persistenceHealth.run("history_write", () => historyWriter.flush()).then(notify, notify); }
 function configure() { engine?.configure(options()); nativeIdleReconcile?.(); notify(); }
+function discoverStatusUpdater() {
+    let candidate: any = null;
+    try { candidate = find(updaterCandidatePredicate, { isIndirect: true }); } catch { /* The exact status updater is not present yet. */ }
+    if (!candidate) {
+        try { candidate = find(value => { try { return hasUpdaterMethods(value); } catch { return false; } }, { isIndirect: true }); } catch { /* Keep the diagnostic as not found. */ }
+    }
+    const resolution = resolveStatusUpdater(candidate ? [candidate] : []);
+    if (updater !== resolution.instance) {
+        const hadPrevious = updater !== undefined;
+        updater = resolution.instance;
+        if (hadPrevious) {
+            provenance.clear(); saveState = "unavailable";
+            engine?.boundary("status_updater_identity_changed");
+        }
+    }
+    updaterReadiness = resolution.readiness;
+    updaterType = resolution.type;
+    return resolution;
+}
 function validateHooks() {
     try {
         if (!manualHook) {
@@ -126,7 +148,8 @@ function validateHooks() {
             if (id != null) wreq(id);
         }
         const action = findByCode("nextStatus:", "statusCreatedAtMs");
-        updater = findByProps("updateAsync", "markDirty");
+        const updaterResolution = discoverStatusUpdater();
+        const selectedUpdater = updaterResolution.instance;
         saveHooks = typeof updater?.markDirty === "function" && updater.markDirty.toString().includes("saveQueued(") && typeof updater?.persistChanges === "function" && updater.persistChanges.toString().includes("saveStarted(") && updater.persistChanges.toString().includes("saveSucceeded(") && updater.persistChanges.toString().includes("saveFailed(");
         connectionStates = findByProps("SESSION_ESTABLISHED", "RESUMING");
         delay = findByProps("INFREQUENT_USER_ACTION", "AUTOMATED")?.INFREQUENT_USER_ACTION;
@@ -134,19 +157,16 @@ function validateHooks() {
         const currentSignature = currentConfiguredSignature();
         if (configuredSignature === null && currentSignature !== null) configuredSignature = currentSignature;
         const signatureReady = currentSignature !== null;
-        statusHooks = connectionStates?.SESSION_ESTABLISHED !== undefined && manualHook && typeof action === "function" && action.toString().includes(".statusAction(") && typeof updater?.updateAsync === "function" && updater.updateAsync.toString().includes(".generatedUpdate(") && Number.isFinite(delay) && UserSettingsProtoStore.hasLoaded(1) && signatureReady && !conflict;
-        patchError = conflict ? "conflicting_status_plugin_enabled" : !signatureReady ? configuredSignatureHealth : !statusHooks ? "required_status_hooks_unavailable" : settings.store.idle && !nativeIdleHook ? "native_idle_hook_not_ready" : "none";
+        statusHooks = connectionStates?.SESSION_ESTABLISHED !== undefined && manualHook && typeof action === "function" && action.toString().includes(".statusAction(") && selectedUpdater !== null && updaterReadiness === "ready" && Number.isFinite(delay) && UserSettingsProtoStore.hasLoaded(1) && signatureReady && !conflict;
+        patchError = conflict ? "conflicting_status_plugin_enabled" : !signatureReady ? configuredSignatureHealth : updaterReadiness !== "ready" ? `status_updater_${updaterReadiness}` : !statusHooks ? "required_status_hooks_unavailable" : settings.store.idle && !nativeIdleHook ? "native_idle_hook_not_ready" : "none";
     } catch { statusHooks = false; patchError = "required_status_hooks_unavailable"; }
 }
 async function write(token: WriteToken, guard: () => boolean) {
-    const callback = statusMutator(token.target, guard);
-    provenance.register(callback, token);
-    await updater.updateAsync("status", callback, delay);
-    // Flux confirmation is queued behind the synchronous store update, ahead of this continuation.
-    await Promise.resolve();
+    return writeConfiguredStatus({ updater, currentUpdater: () => updater, ready: () => updaterReadiness === "ready", token, guard, delay, register: (callback, current, instance) => provenance.register(callback, current, instance), trace: statusWriteTrace, now: Date.now });
 }
 function subscribe(type: string, fn: (event: any) => void) { FluxDispatcher.subscribe(type as any, fn); subscriptions.push([type, fn]); }
 function statusUpdate(event: any) {
+    if (!isStatusSettingsEventType(event.settings?.type)) return;
     const proto = event.settings?.proto;
     const parsed = parseStatusProto(proto);
     if (!parsed.mentionsStatus) return;
@@ -164,6 +184,7 @@ function statusUpdate(event: any) {
     if (!hasStatus && !hasDuration) return;
     const token = provenance.take(proto);
     const ownSaveEcho = provenance.takeSaveAck(proto);
+    if (token) statusWriteTrace.update(token, "locally_applied", "locally_applied", Date.now());
     const nextSignature = currentConfiguredSignature();
     const changed = configuredSignature !== null && nextSignature !== null && configuredSignature !== nextSignature;
     configuredSignature = nextSignature;
@@ -210,7 +231,7 @@ async function poll() {
         localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: tracks.live ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_muted_or_disabled" : "no_observed_live_camera_track" };
         engine.sample();
         const s = read();
-        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, activityReason: activity.reason, activityValue: activity.value, activityIdleMs, idleRemainingMs: idleQualificationRemainingMs, activitySampleAgeMs, activityContinuityReason, helperSnapshotSequence, helperSnapshotAgeMs, helperSnapshotHealth, helperLeaseHealthy: detectors?.helperLeaseHealthy === true, pendingWritePhase: engine?.pendingPhase, pausedRules: engine?.pausedDetails, configuredSignatureHealth, nativeIdleAttributed: s.nativeIdleAttributed, saveState, saveHooks, statusHooks, nativeIdleHook, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, storageHealth: persistenceHealth.summary }));
+        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, activityReason: activity.reason, activityValue: activity.value, activityIdleMs, idleRemainingMs: idleQualificationRemainingMs, activitySampleAgeMs, activityContinuityReason, helperSnapshotSequence, helperSnapshotAgeMs, helperSnapshotHealth, helperLeaseHealthy: detectors?.helperLeaseHealthy === true, pendingWritePhase: engine?.pendingPhase, pausedRules: engine?.pausedDetails, configuredSignatureHealth, nativeIdleAttributed: s.nativeIdleAttributed, saveState, saveHooks, statusHooks, nativeIdleHook, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, updaterReadiness, updaterType, lastWrite: statusWriteTrace.lastWrite, storageHealth: persistenceHealth.summary }));
         notify();
     } catch { if (epoch === lifecycle) { display = UNKNOWN("GNOME", "native_poll_failed"); activity = UNKNOWN("GNOME system-wide input", "native_poll_failed", Date.now()); pwCamera = UNKNOWN("PipeWire", "native_poll_failed"); helperSnapshotHealth = "native_poll_failed"; helperSnapshotSequence = null; helperSnapshotAgeMs = null; activityIdleMs = null; activitySampleAgeMs = null; activityContinuityReason = "native_poll_failed"; idleQualificationRemainingMs = null; engine?.sample(); } }
     finally { polling = false; }
@@ -229,11 +250,12 @@ function Panel() {
     React.useEffect(() => { const update = () => render(n => n + 1); changes.add(update); void poll(); return () => { changes.delete(update); }; }, []);
     settings.use(["observe", "idle", "camera"]);
     const s = read();
+    const { lastWrite } = statusWriteTrace;
     const [message, setMessage] = useState("");
     return <div style={{ padding: 16, maxHeight: "70vh", overflow: "auto" }}>
         <Forms.FormTitle>PresenceGuard — {mode()}</Forms.FormTitle>
         <Forms.FormText>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Forms.FormText>
-        <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Status hooks: {statusHooks ? "ready" : "unavailable"}; native Idle: {nativeIdleHook ? "ready" : "unavailable"}; save lifecycle: {saveHooks ? "tracked" : "unavailable"} ({patchError}).</Forms.FormText>
+        <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Status updater: {updaterReadiness} (type {updaterType ?? "unknown"}); status hooks: {statusHooks ? "ready" : "unavailable"}; native Idle: {nativeIdleHook ? "ready" : "unavailable"}; save lifecycle: {saveHooks ? "tracked" : "unavailable"} ({patchError}).</Forms.FormText>
         <Forms.FormText>Desktop activity: {s.activity.value} — {s.activity.reason}. Idle counter: {activityIdleMs === null ? "unavailable/input sample pending" : `${Math.max(0, Math.round(activityIdleMs / 1000))}s`}; qualification remaining: {idleQualificationRemainingMs === null ? "unavailable" : `${Math.ceil(idleQualificationRemainingMs / 1000)}s`}; sample age: {activitySampleAgeMs === null ? "unavailable" : `${activitySampleAgeMs}ms`}; continuity: {activityContinuityReason ?? "continuous"}; helper: {helperSnapshotHealth} (sequence {helperSnapshotSequence ?? "unavailable"}). Configured-status signature: {configuredSignatureHealth}. Native Idle: {String(s.nativeIdle)} (attributed: {String(s.nativeIdleAttributed)}). Configured-status save evidence: {saveState}; pending write: {engine?.pendingPhase ?? "none"}.</Forms.FormText>
         {engine?.pausedDetails.map(item => <Forms.FormText key={item.rule}>Paused {item.rule}: {item.reason} at {new Date(item.at).toLocaleString()}</Forms.FormText>)}
         <Forms.FormText>Local storage: {persistenceHealth.summary}. Pending history events: {historyWriter.pendingCount}.</Forms.FormText>
@@ -243,6 +265,7 @@ function Panel() {
         <Forms.FormText>PipeWire: {pwCamera.value} — {pwCamera.reason}. Vesktop: {localCamera.value} — {localCamera.reason}.</Forms.FormText>
         <Forms.FormText>Local presence is not independent proof of what other sessions or users see. Simulations never change status.</Forms.FormText>
         <Forms.FormText>Desktop inactivity never uses phone activity. Local application, a correlated save acknowledgement, and mobile/server observations are separate evidence.</Forms.FormText>
+        {lastWrite && <Forms.FormText>Last configured-status write #{lastWrite.operation}: {lastWrite.target}, {lastWrite.phase}/{lastWrite.outcome}{lastWrite.errorCode ? ` (${lastWrite.errorCode})` : ""}. Requested {new Date(lastWrite.requestedAt).toLocaleTimeString()}, updated {new Date(lastWrite.updatedAt).toLocaleTimeString()}.</Forms.FormText>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "12px 0" }}>
             <Button onClick={() => { settings.store.idle = !settings.store.idle; configure(); }}>Automatic Idle: {settings.store.idle ? "On" : "Off"}</Button>
             <Button onClick={() => { settings.store.camera = !settings.store.camera; configure(); }}>Webcam DND: {settings.store.camera ? "On" : "Off"}</Button>
@@ -285,24 +308,30 @@ export default definePlugin({
         }
         return action;
     },
-    generatedUpdate(callback: object, proto: unknown) { provenance.generated(callback, proto); },
-    saveQueued(owner: object, proto: object) {
-        const token = provenance.saveQueued(owner, proto);
-        if (token) { saveState = "pending"; engine?.saveOutcome(token, "pending", "client_status_save_queued_request_not_yet_confirmed"); }
+    generatedUpdate(owner: object, callback: object, proto: unknown) {
+        if (owner !== updater) return;
+        provenance.generated(owner, callback, proto);
     },
-    saveStarted(owner: object, proto: unknown) { return provenance.saveStarted(owner, proto); },
+    saveQueued(owner: object, proto: object) {
+        if (owner !== updater) return;
+        const token = provenance.saveQueued(owner, proto);
+        if (token) { statusWriteTrace.update(token, "save_pending", "save_pending", Date.now()); saveState = "pending"; engine?.saveOutcome(token, "pending", "client_status_save_queued_request_not_yet_confirmed"); }
+    },
+    saveStarted(owner: object, proto: unknown) { return owner === updater ? provenance.saveStarted(owner, proto) : undefined; },
     saveSucceeded(owner: object, context: any, proto: unknown) {
+        if (owner !== updater) return;
         const outcome = provenance.saveSucceeded(owner, context, proto);
         if (outcome.state === "succeeded") {
             saveState = "succeeded";
-            for (const token of outcome.tokens) engine?.saveOutcome(token, "succeeded", "correlated_configured_status_save_acknowledgement");
+            for (const token of outcome.tokens) { statusWriteTrace.update(token, "save_succeeded", "save_confirmed", Date.now()); engine?.saveOutcome(token, "succeeded", "correlated_configured_status_save_acknowledgement"); }
         } else if (outcome.state === "unavailable") {
             saveState = "unavailable";
-            for (const token of outcome.tokens) engine?.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched");
+            for (const token of outcome.tokens) { statusWriteTrace.update(token, "unavailable", "unavailable", Date.now(), "save_acknowledgement_unavailable"); engine?.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched"); }
         }
     },
     saveUnavailable(owner: object, context: any) { return this.saveSucceeded(owner, context, null); },
     saveFailed(owner: object, context: any, kind: string) {
+        if (owner !== updater) return;
         const retrying = kind === "rate_limited";
         const tokens = provenance.saveFailed(owner, context, retrying);
         if (!tokens.length) return;
@@ -312,7 +341,7 @@ export default definePlugin({
             return;
         }
         saveState = "failed";
-        for (const token of tokens) engine?.saveOutcome(token, "failed", `configured_status_save_failed_${kind}`);
+        for (const token of tokens) { statusWriteTrace.update(token, "failed", "failed", Date.now(), "save_failed"); engine?.saveOutcome(token, "failed", "configured_status_save_failed_terminal"); }
     },
     nativeIdleProviderReady(reconcile: () => void) {
         if (!engine?.running) return;
@@ -390,6 +419,6 @@ export default definePlugin({
         nativeIdleHook = false; nativeIdleReconcile = undefined; nativeIdleAttributed = false; nativeIdlePendingUntil = 0;
         display = UNKNOWN("GNOME"); activity = UNKNOWN("GNOME system-wide input"); pwCamera = UNKNOWN("PipeWire"); localCamera = UNKNOWN("Vesktop");
         void Native.lease(false);
-        void persistenceHealth.diagnostics(() => Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped", storageHealth: persistenceHealth.summary }));
+        void persistenceHealth.diagnostics(() => Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped", updaterReadiness, updaterType, lastWrite: statusWriteTrace.lastWrite, storageHealth: persistenceHealth.summary }));
     }
 });
