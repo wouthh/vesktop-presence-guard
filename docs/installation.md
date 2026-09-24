@@ -119,7 +119,7 @@ their existing launchers. The panel opens once. Verify the main profile's local
 commit, hooks, detector health, other plugins, and startup errors. These are
 private local diagnostics, never public artifacts.
 
-For the authorized 0.2.1 managed update, verify Main is enabled with Automatic
+For the authorized 0.2.2 managed update, verify Main is enabled with Automatic
 Idle enabled; its fixed desktop inactivity threshold is 300 seconds. Verify the
 Alt PresenceGuard plugin remains disabled. Preserve Main's existing Webcam DND
 choice and all unrelated settings. The update path preserves saved choices; it

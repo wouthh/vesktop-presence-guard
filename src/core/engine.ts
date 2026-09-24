@@ -6,6 +6,7 @@
 
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { WriteCancelledBeforeMutation } from "./mutator";
+import { classifyWriteError } from "./statusUpdater";
 import { type Adapter, type Clock, fresh, type HistoryEvent, type Options, type Rule, type Snapshot, type Source, type Status, type WriteToken } from "./types";
 
 export class PresenceEngine {
@@ -43,7 +44,7 @@ export class PresenceEngine {
 
     private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"], importance?: HistoryEvent["importance"]) {
         if (!this.options.observe) return;
-        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: importance ?? (kind === "observation" || kind === "simulation" ? "detector" : "control"), display: { ...s.display }, camera: { ...s.camera } });
+        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: importance ?? (kind === "observation" || kind === "simulation" || kind === "skip" ? "detector" : "control"), display: { ...s.display }, camera: { ...s.camera } });
     }
 
     private pause(rule: Rule, reason: string) {
@@ -97,7 +98,7 @@ export class PresenceEngine {
                 this.emit("boundary", "rule_disabled_status_left_unchanged", "plugin", this.adapter.read());
             } else if (this.pending && disabled(this.pending.rule)) {
                 this.invalidate(true);
-                this.emit("skip", "pending_rule_disabled_owner_retained_if_matching", "plugin", this.adapter.read());
+                this.emit("skip", "pending_rule_disabled_owner_retained_if_matching", "plugin", this.adapter.read(), undefined, undefined, undefined, "control");
             } else if (this.timer !== undefined) {
                 this.clock.clear(this.timer); this.timer = undefined; this.scheduledRule = null; this.generation++;
             }
@@ -162,7 +163,7 @@ export class PresenceEngine {
         } else if (this.owner && s.configured !== this.owner.status) {
             this.pause(this.owner.rule, "configured_status_changed_while_plugin_owned");
             this.invalidate();
-            this.emit("skip", "status_conflict_rule_paused", source, s);
+            this.emit("skip", "status_conflict_rule_paused", source, s, undefined, undefined, undefined, "control");
         }
         if (!this.previous || s.configured !== this.previous.configured || s.effective !== this.previous.effective || s.aggregate !== this.previous.aggregate) {
             const actualSource = ownConfirmation ? "plugin" : source;
@@ -254,7 +255,7 @@ export class PresenceEngine {
                 const next = this.decide(current);
                 return !this.stopped && token.generation === this.generation && current.account === s.account && next.target === token.target && next.rule === token.rule && (this.options.idle || this.options.camera);
             };
-            if (!guard()) { this.emit("skip", "pending_decision_invalidated", "plugin", this.adapter.read()); return; }
+            if (!guard()) { this.emit("skip", "pending_decision_invalidated", "plugin", this.adapter.read(), undefined, undefined, undefined, "control"); return; }
             this.busy = true;
             this.pending = token;
             this.emit("request", d.reason, "plugin", this.adapter.read(), undefined, token.target);
@@ -262,18 +263,19 @@ export class PresenceEngine {
                 if (token.generation === this.generation && this.pending === token) {
                     this.pause(token.rule, "configured_status_update_not_locally_confirmed");
                     this.invalidate();
-                    this.emit("error", "write_not_locally_confirmed_rule_paused", "plugin", this.adapter.read());
+                    this.emit("error", "write_not_locally_confirmed_rule_paused_local_confirmation_missing", "plugin", this.adapter.read());
                 }
             }).catch(error => {
                 if (token.generation === this.generation && this.pending === token) {
                     if (error instanceof WriteCancelledBeforeMutation) {
                         this.pending = null;
                         this.resetDecision();
-                        this.emit("skip", "write_cancelled_before_local_mutation_reevaluating", "plugin", this.adapter.read());
+                        this.emit("skip", "write_cancelled_before_local_mutation_reevaluating", "plugin", this.adapter.read(), undefined, undefined, undefined, "control");
                     } else {
-                        this.pause(token.rule, "configured_status_write_failed");
+                        const code = classifyWriteError(error);
+                        this.pause(token.rule, `configured_status_write_failed:${code}`);
                         this.invalidate();
-                        this.emit("error", "write_failed_rule_paused", "plugin", this.adapter.read());
+                        this.emit("error", `write_failed_rule_paused_${code}`, "plugin", this.adapter.read());
                     }
                 }
             }).finally(() => { this.busy = false; this.consider(); });
