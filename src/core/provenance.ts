@@ -5,20 +5,22 @@
  */
 
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { type ParsedStatusProto,parseStatusProto } from "./statusProto";
+import { type ParsedStatusProto, parseStatusProto } from "./statusProto";
 import type { WriteToken } from "./types";
 export interface SaveContext {
-    token: WriteToken;
-    expected: ParsedStatusProto;
+    tokens: WriteToken[];
+    expected: ParsedStatusProto | null;
+    correlated: boolean;
 }
 export type SaveAckResult = "succeeded" | "unavailable" | "ignored";
+export interface SaveAckOutcome { state: SaveAckResult; tokens: WriteToken[]; }
 
 function statusFields(proto: any) {
     const parsed = parseStatusProto(proto);
     return parsed.hasStatus ? parsed : null;
 }
 
-function matchesStatus(expected: SaveContext["expected"], actual: ReturnType<typeof statusFields>) {
+function matchesStatus(expected: ParsedStatusProto, actual: ReturnType<typeof statusFields>) {
     if (!actual || expected.configured !== actual.configured) return false;
     if (expected.hasExpiresAtMs && (!actual.hasExpiresAtMs || expected.expiresAtMs !== actual.expiresAtMs)) return false;
     if (expected.hasCreatedAtMs && (!actual.hasCreatedAtMs || expected.createdAtMs !== actual.createdAtMs)) return false;
@@ -59,34 +61,60 @@ export class Provenance {
         return token;
     }
     saveStarted(updater: object, proto: unknown): SaveContext | undefined {
-        const fields = statusFields(proto);
+        const parsed = parseStatusProto(proto);
+        if (!parsed.mentionsStatus) return undefined;
+        const fields = parsed.hasStatus ? parsed : null;
         const queue = this.updaterTokens.get(updater) ?? [];
-        if (!fields) return undefined;
-        const matches = queue.filter(entry => entry.expected !== null && this.activeTokens.has(entry.token) && !this.supersededTokens.has(entry.token)
-            && entry.token.target === fields.configured && matchesStatus(entry.expected, fields));
-        if (matches.length !== 1) return undefined;
-        return { token: matches[0].token, expected: fields };
+        const active = queue.filter(entry => this.activeTokens.has(entry.token) && !this.supersededTokens.has(entry.token));
+        if (!active.length) return undefined;
+        if (fields) {
+            const matches = active.filter(entry => entry.expected !== null && entry.token.target === fields.configured && matchesStatus(entry.expected, fields));
+            if (matches.length === 1) return { tokens: [matches[0].token], expected: fields, correlated: true };
+            const sameTarget = active.filter(entry => entry.token.target === fields.configured);
+            const candidates = matches.length > 1 ? matches : sameTarget.length ? sameTarget : active;
+            return { tokens: candidates.map(entry => entry.token), expected: fields, correlated: false };
+        }
+        // A status-bearing request with an unsupported shape must keep its
+        // active plugin tokens so either terminal outcome can pause them.
+        return { tokens: active.map(entry => entry.token), expected: null, correlated: false };
     }
-    saveSucceeded(updater: object, context: SaveContext | undefined, proto: object): SaveAckResult {
-        if (!context || !this.activeTokens.has(context.token)) return "ignored";
-        this.activeTokens.delete(context.token);
+    private liveTokens(tokens: WriteToken[]) {
+        return [...new Set(tokens)].filter(token => this.activeTokens.has(token));
+    }
+    private retire(updater: object, tokens: WriteToken[]) {
+        const retiring = new Set(tokens);
+        for (const token of retiring) this.activeTokens.delete(token);
         const queue = this.updaterTokens.get(updater) ?? [];
-        this.updaterTokens.set(updater, queue.filter(entry => entry.token !== context.token));
-        if (this.supersededTokens.has(context.token)) return "ignored";
-        if (!matchesStatus(context.expected, statusFields(proto))) return "unavailable";
+        this.updaterTokens.set(updater, queue.filter(entry => !retiring.has(entry.token)));
+    }
+    saveSucceeded(updater: object, context: SaveContext | undefined, proto: object): SaveAckOutcome {
+        if (!context) return { state: "ignored", tokens: [] };
+        const active = this.liveTokens(context.tokens);
+        if (!active.length) return { state: "ignored", tokens: [] };
+        const eligible = active.filter(token => !this.supersededTokens.has(token));
+        this.retire(updater, active);
+        if (!eligible.length) return { state: "ignored", tokens: [] };
+        if (!context.correlated || context.tokens.length !== 1 || eligible.length !== 1 || !context.expected || !matchesStatus(context.expected, statusFields(proto))) {
+            return { state: "unavailable", tokens: eligible };
+        }
         this.saveAcks.add(proto);
-        return "succeeded";
+        return { state: "succeeded", tokens: eligible };
     }
     takeSaveAck(proto: unknown) {
         if (!proto || typeof proto !== "object" || !this.saveAcks.has(proto)) return false;
         this.saveAcks.delete(proto);
         return true;
     }
-    saveFailed(updater: object, context: SaveContext | undefined, retrying: boolean) {
-        if (!context || retrying || !this.activeTokens.has(context.token)) return;
-        this.activeTokens.delete(context.token);
-        const queue = this.updaterTokens.get(updater) ?? [];
-        this.updaterTokens.set(updater, queue.filter(entry => entry.token !== context.token));
+    saveFailed(updater: object, context: SaveContext | undefined, retrying: boolean): WriteToken[] {
+        if (!context) return [];
+        const active = this.liveTokens(context.tokens);
+        if (!active.length) return [];
+        const superseded = active.filter(token => this.supersededTokens.has(token));
+        if (superseded.length) this.retire(updater, superseded);
+        const eligible = active.filter(token => !this.supersededTokens.has(token));
+        if (retrying) return eligible;
+        this.retire(updater, eligible);
+        return eligible;
     }
     clear() {
         this.callbacks = new WeakMap(); this.updates = new WeakMap();

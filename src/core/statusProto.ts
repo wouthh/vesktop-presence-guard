@@ -70,7 +70,10 @@ export function parseStatusProto(proto: unknown): ParsedStatusProto {
         return { shape: mentionsStatus || hasDuration ? "unsupported" : "none", mentionsStatus: mentionsStatus || hasDuration, hasStatus: false, configured: "unknown", hasDuration: false, hasExpiresAtMs: false, hasCreatedAtMs: false };
     }
     const shape = rootShape ? "root" : "group";
-    const containers = shape === "root" ? [group!, proto] : [proto];
+    // Duration metadata may live beside the status in either supported
+    // envelope as well as on the outer update object. Identical duplicated
+    // fields are accepted; conflicting or malformed wrappers fail closed.
+    const containers = [group!, proto];
     const durations = durationFields(containers);
     if (!durations.valid) return { shape: "unsupported", mentionsStatus: true, hasStatus: false, configured: "unknown", hasDuration: durations.expires.present || durations.created.present, hasExpiresAtMs: durations.expires.present, hasCreatedAtMs: durations.created.present };
     return {

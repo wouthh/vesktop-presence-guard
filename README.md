@@ -81,14 +81,17 @@ events do not drive the inactivity timer.
 
 A guarded cancellation before the local settings mutation clears only that
 pending operation and allows the same fresh evidence to be evaluated again. A
-real updater error, missing local confirmation, or terminal correlated save
-failure remains visible and pauses the affected rule; a correlated but mismatched
-save acknowledgement is marked unavailable and pauses that rule. Polling does
-not retry a failed write loop. The status adapter accepts the verified
-status-group and root settings envelopes, including status-only updates and
-wrapped timestamps. An unknown required envelope makes automation unavailable
-with a visible reason. A status-only manual picker update is accepted only when
-the selected status has no duration.
+real updater error, missing local confirmation, or terminal save failure
+remains visible and pauses each still-current affected rule; a save is reported
+successful only when its status and available duration fields correlate to one
+exact queued updater operation. Ambiguous, unparseable, or mismatched save
+evidence is marked unavailable and pauses its candidate rule rather than being
+treated as success. Polling does not retry a failed write loop. The status
+adapter accepts the verified status-group and root settings envelopes,
+including status-only updates and wrapped timestamps. Duration metadata may be
+beside the status in either supported envelope; conflicting or unknown required
+shapes make automation unavailable with a visible reason. A status-only manual
+picker update is accepted only when the selected status has no duration.
 
 The local panel/history distinguishes configured status, effective presence,
 native Idle, ownership, local update confirmation and the updater's save

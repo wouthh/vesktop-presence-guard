@@ -18,7 +18,7 @@ function importance(event: HistoryEvent) {
 
 function detectorKey(event: HistoryEvent) {
     const bucket = Math.floor(event.at / COALESCE_WINDOW_MS);
-    return JSON.stringify([bucket, event.kind, event.source, event.previous, event.status, event.configured, event.aggregate, event.reason, event.owned, event.nativeIdleAttributed, event.activity?.value, event.activity?.reason, event.display.value, event.display.facts, event.camera.value]);
+    return JSON.stringify([bucket, event.kind, event.source, event.previous, event.status, event.configured, event.aggregate, event.reason, event.owned, event.nativeIdleAttributed, event.activity?.value, event.activity?.reason, event.display.value, event.display.reason, event.display.facts, event.camera.value, event.camera.reason]);
 }
 
 function combineDetectorEvents(events: HistoryEvent[]) {

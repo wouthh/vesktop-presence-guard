@@ -92,6 +92,23 @@ test("activity uncertainty reason changes remain distinct detector history", () 
     const observations = retain(f.history, f.now()).filter(event => event.kind === "observation" && event.importance === "detector" && event.activity?.value === "unknown");
     assert.deepEqual(observations.map(event => event.activity?.reason), ["activity_provider_unavailable", "idle_counter_reset_without_activity_event"]);
 });
+test("display and camera uncertainty cause changes remain distinct decisions and history", () => {
+    const f = fixture();
+    f.s.display = { ...f.s.display, value: "unknown", reason: "display_poll_failed", at: f.now() }; f.engine.sample();
+    f.s.display = { ...f.s.display, reason: "display_provider_restarted", at: f.now() }; f.engine.sample();
+    f.s.camera = { ...f.s.camera, value: "unknown", reason: "camera_probe_unavailable", at: f.now() }; f.engine.sample();
+    f.s.camera = { ...f.s.camera, reason: "camera_hook_unsupported", at: f.now() }; f.engine.sample();
+    const skips = f.history.filter(event => event.kind === "skip");
+    assert.equal(skips.length, 4);
+    const retained = retain(f.history, f.now());
+    assert.equal(retained.filter(event => event.kind === "skip").length, 4);
+    assert.deepEqual(retained.filter(event => event.kind === "skip").map(event => [event.display.reason, event.camera.reason]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [
+        ["display_poll_failed", "clear"],
+        ["display_provider_restarted", "clear"],
+        ["display_provider_restarted", "camera_probe_unavailable"],
+        ["display_provider_restarted", "camera_hook_unsupported"]
+    ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+});
 for (const value of ["idle", "dnd", "invisible", "offline", "unknown"] as Status[]) test(`non-owned ${value} remains untouched`, async () => {
     const f = fixture(); f.s.configured = f.s.effective = value; f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);
 });

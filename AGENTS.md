@@ -39,14 +39,17 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   automation. Genuine updater, confirmation, and terminal-save failures remain
   visible and pause the affected rule.
 - Parse only supported configured-status group/root envelopes and wrappers;
+  group-level or root-level duration metadata is accepted when unambiguous, and
   unknown required shapes fail closed. Save acknowledgements require one exact
   queued updater operation with compatible parsed status/duration evidence;
-  ambiguous, unparseable, or mismatched evidence never counts as success.
+  ambiguous, unparseable, or mismatched evidence never counts as success, while
+  candidate tokens remain attached so terminal outcomes pause affected rules.
 - Retain no more than 500 history events for seven days, reserving 400 for
   status/control and 100 for coalesced detector summaries. Status changes use
-  the control reservation; uncertainty-reason changes remain distinct bounded
-  detector summaries. Persisted-event deduplication includes activity evidence
-  and native Idle attribution; an in-flight event keeps stable queue identity.
+  the control reservation; activity, display, and camera uncertainty-reason
+  changes remain distinct bounded detector summaries. Persisted-event
+  deduplication includes activity evidence and native Idle attribution; an
+  in-flight event keeps stable queue identity.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.

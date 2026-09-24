@@ -225,7 +225,7 @@ export class PresenceEngine {
         const simulation = !this.options.idle && !this.options.camera;
         const d = this.decide(s, simulation);
         this.latestDecision = simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason;
-        const key = JSON.stringify([simulation, d.target ?? null, d.rule ?? null, d.reason, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.display.value, s.camera.value, this.ownership, this.pausedRules]);
+        const key = JSON.stringify([simulation, d.target ?? null, d.rule ?? null, d.reason, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.display.value, s.display.reason, s.camera.value, s.camera.reason, this.ownership, this.pausedRules]);
         if (key !== this.decisionKey) {
             this.decisionKey = key;
             this.emit(simulation ? "simulation" : "skip", simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason, "plugin", s, undefined, d.target ?? s.effective);

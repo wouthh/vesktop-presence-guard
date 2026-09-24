@@ -292,21 +292,26 @@ export default definePlugin({
     },
     saveStarted(owner: object, proto: unknown) { return provenance.saveStarted(owner, proto); },
     saveSucceeded(owner: object, context: any, proto: object) {
-        const result = provenance.saveSucceeded(owner, context, proto);
-        if (result === "succeeded") { saveState = "succeeded"; engine?.saveOutcome(context.token, "succeeded", "correlated_configured_status_save_acknowledgement"); }
-        else if (result === "unavailable") { saveState = "unavailable"; engine?.saveOutcome(context.token, "unavailable", "configured_status_save_acknowledgement_unmatched"); }
+        const outcome = provenance.saveSucceeded(owner, context, proto);
+        if (outcome.state === "succeeded") {
+            saveState = "succeeded";
+            for (const token of outcome.tokens) engine?.saveOutcome(token, "succeeded", "correlated_configured_status_save_acknowledgement");
+        } else if (outcome.state === "unavailable") {
+            saveState = "unavailable";
+            for (const token of outcome.tokens) engine?.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched");
+        }
     },
     saveFailed(owner: object, context: any, kind: string) {
-        if (!context) return;
         const retrying = kind === "rate_limited";
-        provenance.saveFailed(owner, context, retrying);
+        const tokens = provenance.saveFailed(owner, context, retrying);
+        if (!tokens.length) return;
         if (retrying) {
             saveState = "pending";
-            engine?.saveOutcome(context.token, "pending", "configured_status_save_rate_limited_retrying");
+            for (const token of tokens) engine?.saveOutcome(token, "pending", "configured_status_save_rate_limited_retrying");
             return;
         }
         saveState = "failed";
-        engine?.saveOutcome(context.token, "failed", `configured_status_save_failed_${kind}`);
+        for (const token of tokens) engine?.saveOutcome(token, "failed", `configured_status_save_failed_${kind}`);
     },
     nativeIdleProviderReady(reconcile: () => void) {
         if (!engine?.running) return;

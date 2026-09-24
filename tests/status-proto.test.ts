@@ -19,6 +19,18 @@ test("current root protobuf envelope parses nested status and wrapped timestamps
     assert.equal(parsed.createdAtMs, "1200");
 });
 
+test("group envelope reads duration wrappers beside status and rejects conflicts", () => {
+    const parsed = parseStatusProto({ status: { value: "idle", statusExpiresAtMs: { value: "3000" }, statusCreatedAtMs: { value: "1000" } } });
+    assert.equal(parsed.shape, "group");
+    assert.equal(parsed.configured, "idle");
+    assert.equal(parsed.expiresAtMs, "3000");
+    assert.equal(parsed.createdAtMs, "1000");
+
+    const conflict = parseStatusProto({ status: { value: "idle", statusExpiresAtMs: "3000" }, statusExpiresAtMs: "4000" });
+    assert.equal(conflict.shape, "unsupported");
+    assert.equal(conflict.hasStatus, false);
+});
+
 test("status-only nested updates are supported and unknown status shapes fail closed", () => {
     assert.equal(parseStatusProto({ status: { status: { value: "dnd" } } }).configured, "dnd");
     assert.equal(parseStatusProto({ status: { unexpected: "idle" } }).shape, "unsupported");
