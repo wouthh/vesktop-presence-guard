@@ -291,7 +291,7 @@ export default definePlugin({
         if (token) { saveState = "pending"; engine?.saveOutcome(token, "pending", "client_status_save_queued_request_not_yet_confirmed"); }
     },
     saveStarted(owner: object, proto: unknown) { return provenance.saveStarted(owner, proto); },
-    saveSucceeded(owner: object, context: any, proto: object) {
+    saveSucceeded(owner: object, context: any, proto: unknown) {
         const outcome = provenance.saveSucceeded(owner, context, proto);
         if (outcome.state === "succeeded") {
             saveState = "succeeded";
@@ -301,6 +301,7 @@ export default definePlugin({
             for (const token of outcome.tokens) engine?.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched");
         }
     },
+    saveUnavailable(owner: object, context: any) { return this.saveSucceeded(owner, context, null); },
     saveFailed(owner: object, context: any, kind: string) {
         const retrying = kind === "rate_limited";
         const tokens = provenance.saveFailed(owner, context, retrying);

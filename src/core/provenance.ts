@@ -87,7 +87,7 @@ export class Provenance {
         const queue = this.updaterTokens.get(updater) ?? [];
         this.updaterTokens.set(updater, queue.filter(entry => !retiring.has(entry.token)));
     }
-    saveSucceeded(updater: object, context: SaveContext | undefined, proto: object): SaveAckOutcome {
+    saveSucceeded(updater: object, context: SaveContext | undefined, proto: unknown): SaveAckOutcome {
         if (!context) return { state: "ignored", tokens: [] };
         const active = this.liveTokens(context.tokens);
         if (!active.length) return { state: "ignored", tokens: [] };
@@ -97,6 +97,7 @@ export class Provenance {
         if (!context.correlated || context.tokens.length !== 1 || eligible.length !== 1 || !context.expected || !matchesStatus(context.expected, statusFields(proto))) {
             return { state: "unavailable", tokens: eligible };
         }
+        if (!proto || typeof proto !== "object") return { state: "unavailable", tokens: eligible };
         this.saveAcks.add(proto);
         return { state: "succeeded", tokens: eligible };
     }

@@ -54,6 +54,14 @@ test("save acknowledgement rejects a changed duration or a nonmatching configure
     assert.deepEqual(p.saveSucceeded(updater, context, { status: { value: "idle" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 500 }), { state: "unavailable", tokens: [token] });
     assert.deepEqual(p.saveSucceeded(updater, context, { status: { value: "online" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 }), { state: "ignored", tokens: [] });
 });
+test("a decoded-null save acknowledgement is an unavailable terminal outcome for its candidate", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 2, target: "idle" as const, rule: "idle" as const };
+    const local = { status: { value: "idle" } };
+    p.register(callback, token); p.generated(callback, local); p.saveQueued(updater, local);
+    const context = p.saveStarted(updater, local)!;
+    assert.deepEqual(p.saveSucceeded(updater, context, null), { state: "unavailable", tokens: [token] });
+});
 test("save provenance parses nested root status envelopes and status-only acknowledgements", () => {
     const p = new Provenance(), updater = {}, callback = () => {};
     const token = { generation: 8, target: "idle" as const, rule: "idle" as const };
@@ -187,7 +195,34 @@ test("save lifecycle patch matches updater queue, request, success and failure c
         assert.notEqual(next, code); code = next;
     }
     assert(code.includes('saveFailed(this,presenceGuardSave,e?.status===429?"rate_limited":"terminal")'));
+    assert(code.includes("saveUnavailable(this,presenceGuardSave)"));
     new Function("$self", "m", "a", "c", `return (${code})();`);
+});
+
+test("a null decoded server acknowledgement is reported before the save path returns", async () => {
+    const observed: string[] = [];
+    const self = {
+        saveQueued: () => observed.push("queued"),
+        saveStarted: () => { observed.push("started"); return {}; },
+        saveUnavailable: () => observed.push("unavailable"),
+        saveSucceeded: () => observed.push("succeeded"),
+        saveFailed: () => observed.push("failed")
+    };
+    let code = 'new class{markDirty(e,t){this.value=e}persistChanges=async()=>{let{editInfo:e}=this.getEditInfo();if(null==e.protoToSave)return void this.logger.log("empty");this.beforeSendCallbacks.forEach(t=>t.processProto(e.protoToSave));let t=(0,m.ob)(this.ProtoClass,e.protoToSave);if(null==t||""===t)return void this.logger.log("empty");try{let{body:n}=await a.Bo.patch({body:t});let i=(0,m.ii)(this.ProtoClass,n.settings);if(null==i)return;c.h.dispatch({type:"USER_SETTINGS_PROTO_UPDATE",settings:{proto:i,type:this.type},resetEditInfo:!0,wasSaved:!0,local:!1})}catch(e){throw e}}}';
+    for (const replacement of saveLifecyclePatch.replacement) code = code.replace(replacement.match, replacement.replace);
+    const updater = new Function("$self", "m", "a", "c", `return (${code});`)(
+        self,
+        { ob: () => "encoded", ii: () => null },
+        { Bo: { patch: async () => ({ body: { settings: "synthetic" } }) } },
+        { h: { dispatch: () => observed.push("dispatch") } }
+    );
+    updater.markDirty({ status: { value: "idle" } }, {});
+    updater.getEditInfo = () => ({ editInfo: { protoToSave: { status: { value: "idle" } } } });
+    updater.beforeSendCallbacks = [{ processProto: () => {} }];
+    updater.ProtoClass = {};
+    updater.logger = { log: () => observed.push("logger") };
+    await updater.persistChanges();
+    assert.deepEqual(observed, ["queued", "started", "unavailable"]);
 });
 
 test("native Idle integration changes only the local IDLE branch and keeps its reevaluator Idle-only", () => {

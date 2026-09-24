@@ -33,9 +33,11 @@ export function normalizeConfiguredStatus(value: unknown): Status {
 }
 
 function timestamp(value: unknown): string | null | undefined {
-    if (value === undefined || value === null) return null;
+    if (value === undefined) return undefined;
+    if (value === null) return null;
     const raw = scalar(value);
-    if (raw === undefined || raw === null) return null;
+    if (raw === undefined) return undefined;
+    if (raw === null) return null;
     if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0) return String(raw);
     if (typeof raw === "string" && /^(0|[1-9]\d{0,15})$/.test(raw)) return raw;
     return undefined;
@@ -97,8 +99,8 @@ export function parseStatusProto(proto: unknown): ParsedStatusProto {
 
 export function configuredStatusSignature(value: unknown, expiresAtMs: unknown, createdAtMs: unknown): string | null {
     const configured = normalizeConfiguredStatus(value);
-    const expires = timestamp(expiresAtMs);
-    const created = timestamp(createdAtMs);
+    const expires = expiresAtMs === undefined ? null : timestamp(expiresAtMs);
+    const created = createdAtMs === undefined ? null : timestamp(createdAtMs);
     if (configured === "unknown" || expires === undefined || created === undefined) return null;
     return JSON.stringify([configured, expires, created]);
 }

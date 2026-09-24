@@ -41,6 +41,12 @@ test("null expiry inside a supported timestamp wrapper means no duration", () =>
     }
 });
 
+test("present undefined duration values fail closed instead of becoming no-expiry evidence", () => {
+    assert.equal(parseStatusProto({ status: { value: "online" }, statusExpiresAtMs: undefined }).shape, "unsupported");
+    assert.equal(parseStatusProto({ status: { status: { value: "online" } }, statusExpiresAtMs: { value: undefined } }).shape, "unsupported");
+    assert.equal(parseStatusProto({ status: { value: "online", statusCreatedAtMs: undefined } }).shape, "unsupported");
+});
+
 test("status-only nested updates are supported and unknown status shapes fail closed", () => {
     assert.equal(parseStatusProto({ status: { status: { value: "dnd" } } }).configured, "dnd");
     assert.equal(parseStatusProto({ status: { unexpected: "idle" } }).shape, "unsupported");
@@ -58,4 +64,5 @@ test("configured status signatures normalize wrappers and include duration edits
     assert.equal(initial, JSON.stringify(["idle", "1000", "500"]));
     assert.notEqual(initial, edited);
     assert.equal(configuredStatusSignature("nonsense", "0", "0"), null);
+    assert.equal(configuredStatusSignature("online", undefined, undefined), JSON.stringify(["online", null, null]));
 });

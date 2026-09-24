@@ -43,9 +43,11 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   malformed or competing status locations and unknown required shapes fail
   closed. Wrapped null expiry remains valid no-duration evidence. A no-duration
   picker selection may correlate with an explicit null or zero expiry, but
-  never with a nonzero duration. Save acknowledgements
-  require one exact queued updater operation with compatible parsed
-  status/duration evidence;
+  never with a nonzero duration; present undefined duration fields are invalid.
+  Save acknowledgements require one exact queued updater operation with
+  compatible parsed status/duration evidence. A successful request with an
+  undecodable/null response is an unavailable terminal outcome for its active
+  candidate, never an unreported success;
   ambiguous, unparseable, or mismatched evidence never counts as success, while
   candidate tokens remain attached so terminal outcomes pause affected rules.
 - Retain no more than 500 history events for seven days, reserving 400 for
@@ -59,6 +61,8 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   summaries use the greater repeat count because individual occurrences are not
   retained; disjoint ranges add. In-flight append identity stays stable, and
   events recorded during Clear survive while prior visible history is removed.
+  Close the clear-collection window before transferring its final events so a
+  completion-microtask enqueue cannot be dropped.
   A failed Clear restores through the same retention limits before attempting
   a best-effort storage reload, so a reload failure cannot expand memory history.
 - Native Idle integration may suppress or clear only the local IDLE event while

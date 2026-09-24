@@ -43,16 +43,27 @@ export class HistoryWriter {
         if (this.clearing) return this.clearing;
         this.paused = true;
         this.clearingEvents = [];
-        this.clearing = (async () => {
+        const clearing = (async () => {
             // An already-issued append completes before the native clear. Never
             // replay an older queued event after a successful user clear.
-            await this.draining?.catch(() => undefined);
-            await operation();
-            this.pending = this.clearingEvents;
-        })().catch(error => {
-            this.pending = retain([...this.pending, ...this.clearingEvents], this.now());
-            throw error;
-        }).finally(() => { this.paused = false; this.clearingEvents = []; this.clearing = undefined; });
-        return this.clearing;
+            try {
+                await this.draining?.catch(() => undefined);
+                await operation();
+                const events = this.clearingEvents;
+                this.clearing = undefined;
+                this.clearingEvents = [];
+                this.pending = events;
+            } catch (error) {
+                const events = this.clearingEvents;
+                this.clearing = undefined;
+                this.clearingEvents = [];
+                this.pending = retain([...this.pending, ...events], this.now());
+                throw error;
+            } finally {
+                this.paused = false;
+            }
+        })();
+        this.clearing = clearing;
+        return clearing;
     }
 }

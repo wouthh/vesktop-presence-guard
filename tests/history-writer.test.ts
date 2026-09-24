@@ -34,6 +34,23 @@ for (const failed of [false, true]) test(`clear ${failed ? "failure preserves" :
     assert.deepEqual(saved, failed ? ["first", "second", "new"] : ["new"]);
     assert.deepEqual(attempts, failed ? ["first", "second", "new"] : ["first", "new"]); assert.equal(writer.pendingCount, 0);
 });
+test("events enqueued in the clear-completion microtask remain pending", async () => {
+    let startOperation!: () => void, resolveClear!: () => void;
+    const started = new Promise<void>(resolve => { startOperation = resolve; });
+    const saved: string[] = [];
+    const writer = new HistoryWriter(async e => { saved.push(e.reason); }, () => 100000);
+    const clearing = writer.clear(() => {
+        startOperation();
+        return new Promise<void>(resolve => { resolveClear = resolve; });
+    });
+    await started;
+    resolveClear();
+    queueMicrotask(() => writer.enqueue(event("late_clear_window")));
+    await clearing;
+    await writer.flush();
+    assert.deepEqual(saved, ["late_clear_window"]);
+    assert.equal(writer.pendingCount, 0);
+});
 test("failed pending history obeys the same count and time limits as retained history", async () => {
     let now = 100000, attempts = 0;
     const writer = new HistoryWriter(async () => { attempts++; throw Error("unavailable"); }, () => now);
