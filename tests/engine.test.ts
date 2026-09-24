@@ -354,6 +354,15 @@ test("history loading preserves distinct same-millisecond observations", () => {
     assert(merged.every(row => row.importance === "control"));
 });
 
+test("history loading preserves same-millisecond activity causes and native Idle attribution", () => {
+    const f = fixture(); f.engine.sample();
+    const event = f.history.find(e => e.kind === "observation" && e.importance === "detector")!;
+    const activityChanged: HistoryEvent = { ...event, activity: { ...event.activity!, reason: "second_activity_cause" } };
+    const attributionChanged: HistoryEvent = { ...event, nativeIdleAttributed: true };
+    assert.equal(mergeHistory([event], [activityChanged], event.at).length, 2);
+    assert.equal(mergeHistory([event], [attributionChanged], event.at).length, 2);
+});
+
 test("external intervention pauses both owner and in-flight transition rules", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance();
     let release!: () => void; f.delayWrite(() => new Promise(r => { release = r; }));

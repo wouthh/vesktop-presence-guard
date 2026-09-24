@@ -45,7 +45,8 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Retain no more than 500 history events for seven days, reserving 400 for
   status/control and 100 for coalesced detector summaries. Status changes use
   the control reservation; uncertainty-reason changes remain distinct bounded
-  detector summaries, and an in-flight event keeps stable queue identity.
+  detector summaries. Persisted-event deduplication includes activity evidence
+  and native Idle attribution; an in-flight event keeps stable queue identity.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.
