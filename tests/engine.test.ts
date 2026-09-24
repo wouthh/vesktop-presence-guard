@@ -5,6 +5,7 @@ import { PresenceEngine } from "../src/core/engine";
 import { DisplayDetector } from "../src/core/display";
 import { clearHistoryView, loadHistoryView, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { Provenance } from "../src/core/provenance";
+import { statusMutator } from "../src/core/mutator";
 import { combineCamera } from "../src/core/camera";
 import { UNKNOWN } from "../src/core/types";
 import type { HistoryEvent, Options, Snapshot, Status, WriteToken } from "../src/core/types";
@@ -206,7 +207,25 @@ test("no redundant or flapping writes", async () => {
 });
 test("history retention caps both age and count", () => {
     const f = fixture(); f.engine.sample(); const base = f.history[0]; const now = RETENTION_MS * 2;
-    const entries = Array.from({ length: 600 }, (_, i) => ({ ...base, at: now - i })); assert.equal(retain(entries, now).length, 500); assert.deepEqual(retain([{ ...base, at: 0 }, { ...base, at: now + 1 }], now), []);
+    const entries = Array.from({ length: 1000 }, (_, i) => ({ ...base, at: now - i, reason: `retention_${i}`, importance: i % 2 ? "control" as const : "detector" as const }));
+    const kept = retain(entries, now);
+    assert.equal(kept.length, 500);
+    assert.equal(kept.filter(event => event.importance === "control").length, 400);
+    assert.equal(kept.filter(event => event.importance === "detector").length, 100);
+    assert.deepEqual(retain([{ ...base, at: 0 }, { ...base, at: now + 1 }], now), []);
+});
+
+test("overnight detector churn cannot evict status and control history", () => {
+    const f = fixture(); f.engine.sample(); const base = f.history[0];
+    const start = 10_000_000, end = start + 24 * 60 * 60 * 1_000;
+    const controls: HistoryEvent[] = Array.from({ length: 12 }, (_, i) => ({ ...base, at: start + i, kind: "request", reason: `control_${i}`, importance: "control" }));
+    const detectorChurn: HistoryEvent[] = Array.from({ length: 43_200 }, (_, i) => ({ ...base, at: start + i * 2_000, kind: "observation", reason: `detector_reason_${i % 4}`, importance: "detector" }));
+    const kept = retain([...controls, ...detectorChurn], end);
+    assert(kept.length <= 500);
+    assert(controls.every(event => kept.some(row => row.reason === event.reason)));
+    assert(kept.filter(event => event.importance === "control").length >= controls.length);
+    assert(kept.filter(event => event.importance === "detector").length <= 100);
+    assert(kept.some(event => (event.repeatCount ?? 0) > 1 && Number.isFinite(event.firstAt) && Number.isFinite(event.lastAt)));
 });
 test("provenance follows exact objects, never equal values", () => {
     const p = new Provenance(), callback = () => {}, proto = { status: "idle" }; const token: WriteToken = { generation: 1, target: "idle", rule: "idle" }; p.register(callback, token); p.generated(callback, proto);
@@ -221,6 +240,26 @@ test("a rejected write pauses without retrying or retaining ownership", async ()
     const f = fixture(); f.delayWrite(async () => { throw Error("synthetic adapter failure"); });
     f.signal("inactive"); await f.advance(); assert.deepEqual(f.engine.pausedRules, ["idle"]);
     f.signal("inactive"); await f.advance(); assert.deepEqual(f.writes, []); assert.equal(f.engine.ownership, null);
+});
+test("production guarded-writer cancellation before mutation is retried after eligibility recovers", async () => {
+    const f = fixture(); let cancelOnce = true;
+    f.delayWrite(token => {
+        const draft = { status: { value: "online" } };
+        if (cancelOnce) {
+            cancelOnce = false;
+            statusMutator(token.target, () => false)(draft);
+        } else statusMutator(token.target, () => true)(draft);
+        assert.equal(draft.status.value, token.target);
+        return Promise.resolve();
+    });
+    f.signal("inactive"); await f.advance();
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(f.engine.pausedRules, []);
+    assert.equal(f.engine.pendingPhase, "debounce");
+    await f.advance();
+    assert.deepEqual(f.writes, ["idle"]);
+    assert.equal(f.engine.ownership?.status, "idle");
+    assert(f.history.some(event => event.reason === "write_cancelled_before_local_mutation_reevaluating"));
 });
 test("a confirmed local write with a failed save stays visible and pauses return until Resume", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance();
@@ -292,7 +331,10 @@ test("new start epoch rejects fresh-looking detector values retained by an adapt
 test("history loading preserves distinct same-millisecond observations", () => {
     const f = fixture(); f.engine.sample(); const event = f.history.find(e => e.kind === "observation")!;
     const changed: HistoryEvent = { ...event, status: "idle", configured: "online" };
-    assert.deepEqual(mergeHistory([event, changed], [event, changed], event.at), [event, changed]);
+    const merged = mergeHistory([event, changed], [event, changed], event.at);
+    assert.equal(merged.length, 2);
+    assert.deepEqual(merged.map(row => row.status).sort(), ["idle", "online"]);
+    assert(merged.every(row => row.repeatCount === 1));
 });
 
 test("external intervention pauses both owner and in-flight transition rules", async () => {
@@ -337,7 +379,10 @@ test("failed clear reloads retained startup history and preserves events receive
     const startup = loadHistoryView(view, () => new Promise(r => { release = r; }), () => generation === 0, () => recent.at);
     generation++;
     await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at)), /read_only_storage/);
-    assert.deepEqual(events, [old, recent]);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].repeatCount, 2);
+    assert.equal(events[0].firstAt, old.at);
+    assert.equal(events[0].lastAt, recent.at);
 });
 
 for (const choice of ["idle", "dnd", "invisible", "unknown"] as const) test(`pending manual ${choice} blocks acquisition from the old Online preference`, async () => {

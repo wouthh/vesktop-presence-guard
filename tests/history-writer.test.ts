@@ -27,6 +27,6 @@ test("failed pending history obeys the same count and time limits as retained hi
     let now = 100000, attempts = 0;
     const writer = new HistoryWriter(async () => { attempts++; throw Error("unavailable"); }, () => now);
     for (let i = 0; i < MAX_EVENTS + 10; i++) writer.enqueue(event(String(i)));
-    assert.equal(writer.pendingCount, MAX_EVENTS); await assert.rejects(writer.flush());
+    assert.equal(writer.pendingCount, 100); await assert.rejects(writer.flush());
     now += RETENTION_MS + 1; await writer.flush(); assert.equal(writer.pendingCount, 0); assert.equal(attempts, 1);
 });

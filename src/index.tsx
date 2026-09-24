@@ -12,7 +12,7 @@ import { findByCode, findByProps, findModuleId, findStoreLazy, wreq } from "@web
 import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, UserStore, useState } from "@webpack/common";
 
 import { BUILD_INFO } from "./buildInfo";
-import { ActivityDetector } from "./core/activity";
+import { ActivityDetector, type ActivityObservation } from "./core/activity";
 import { cameraSnapshot, PipeWireDetector } from "./core/camera";
 import { isConfiguredIntervention, isManualSelectionUpdate, matchesManualExpiry } from "./core/configured-update";
 import { DisplayDetector } from "./core/display";
@@ -25,14 +25,15 @@ import { isNativeAutomaticIdle } from "./core/native-idle";
 import { PersistenceHealth } from "./core/persistenceHealth";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
+import { configuredStatusSignature, parseStatusProto } from "./core/statusProto";
 import { CameraTracks } from "./core/tracks";
 import { fresh, HistoryEvent, Options, Snapshot, status, UNKNOWN, WriteToken } from "./core/types";
 import { actionPatch, cameraPatch, nativeIdlePatch, protoPatch, saveLifecyclePatch, selectionPatch } from "./patches";
 
 const Native = VencordNative.pluginHelpers.PresenceGuard as PluginNative<typeof import("./native")>;
 const Configured = getUserSettingLazy<string>("status", "status")!;
-const ConfiguredExpires = getUserSettingLazy<number>("statusExpiresAtMs", "status");
-const ConfiguredCreated = getUserSettingLazy<number>("statusCreatedAtMs", "status");
+const ConfiguredExpires = getUserSettingLazy<unknown>("status", "statusExpiresAtMs");
+const ConfiguredCreated = getUserSettingLazy<unknown>("status", "statusCreatedAtMs");
 const SelfPresence = findStoreLazy("SelfPresenceStore");
 const AggregatePresence = findStoreLazy("PresenceStore");
 const Gateway = findStoreLazy("GatewayConnectionStore");
@@ -66,6 +67,7 @@ let nativeIdleAttributed = false;
 let saveHooks = false;
 let saveState = "unavailable";
 let configuredSignature: string | null = null;
+let configuredSignatureHealth = "starting";
 let pluginActive = false;
 let connectionStates: any;
 let delay: number;
@@ -75,6 +77,13 @@ let display = UNKNOWN("GNOME");
 let activity = UNKNOWN("GNOME system-wide input");
 let pwCamera = UNKNOWN("PipeWire");
 let localCamera = UNKNOWN("Vesktop");
+let helperSnapshotSequence: number | null = null;
+let helperSnapshotAgeMs: number | null = null;
+let helperSnapshotHealth = "starting";
+let activityIdleMs: number | null = null;
+let activitySampleAgeMs: number | null = null;
+let activityContinuityReason: string | null = null;
+let idleQualificationRemainingMs: number | null = null;
 const changes = new Set<() => void>();
 const notify = () => changes.forEach(fn => fn());
 const historyView = { get: () => events, set: (value: HistoryEvent[]) => { events = value; notify(); } };
@@ -90,8 +99,10 @@ const settings = definePluginSettings({
 function options(): Options { return { observe: settings.store.observe, idle: settings.store.idle, camera: settings.store.camera }; }
 function currentConfiguredSignature() {
     try {
-        return JSON.stringify([Configured.getSetting(), ConfiguredExpires?.getSetting?.() ?? null, ConfiguredCreated?.getSetting?.() ?? null]);
-    } catch { return null; }
+        const signature = configuredStatusSignature(Configured.getSetting(), ConfiguredExpires?.getSetting?.(), ConfiguredCreated?.getSetting?.());
+        configuredSignatureHealth = signature === null ? "configured_status_or_duration_shape_unavailable" : "supported";
+        return signature;
+    } catch { configuredSignatureHealth = "configured_status_signature_read_failed"; return null; }
 }
 function read(): Snapshot {
     try {
@@ -120,8 +131,9 @@ function validateHooks() {
         connectionStates = findByProps("SESSION_ESTABLISHED", "RESUMING");
         delay = findByProps("INFREQUENT_USER_ACTION", "AUTOMATED")?.INFREQUENT_USER_ACTION;
         const conflict = ["CustomIdle", "AutoDNDWhilePlaying"].some(name => Vencord.Settings.plugins[name]?.enabled);
-        statusHooks = connectionStates?.SESSION_ESTABLISHED !== undefined && manualHook && typeof action === "function" && action.toString().includes(".statusAction(") && typeof updater?.updateAsync === "function" && updater.updateAsync.toString().includes(".generatedUpdate(") && Number.isFinite(delay) && UserSettingsProtoStore.hasLoaded(1) && !conflict;
-        patchError = conflict ? "conflicting_status_plugin_enabled" : !statusHooks ? "required_status_hooks_unavailable" : settings.store.idle && !nativeIdleHook ? "native_idle_hook_not_ready" : "none";
+        const signatureReady = currentConfiguredSignature() !== null;
+        statusHooks = connectionStates?.SESSION_ESTABLISHED !== undefined && manualHook && typeof action === "function" && action.toString().includes(".statusAction(") && typeof updater?.updateAsync === "function" && updater.updateAsync.toString().includes(".generatedUpdate(") && Number.isFinite(delay) && UserSettingsProtoStore.hasLoaded(1) && signatureReady && !conflict;
+        patchError = conflict ? "conflicting_status_plugin_enabled" : !signatureReady ? configuredSignatureHealth : !statusHooks ? "required_status_hooks_unavailable" : settings.store.idle && !nativeIdleHook ? "native_idle_hook_not_ready" : "none";
     } catch { statusHooks = false; patchError = "required_status_hooks_unavailable"; }
 }
 async function write(token: WriteToken, guard: () => boolean) {
@@ -134,9 +146,19 @@ async function write(token: WriteToken, guard: () => boolean) {
 function subscribe(type: string, fn: (event: any) => void) { FluxDispatcher.subscribe(type as any, fn); subscriptions.push([type, fn]); }
 function statusUpdate(event: any) {
     const proto = event.settings?.proto;
-    const nested = proto?.status;
-    const hasStatus = nested && typeof nested === "object" && Object.hasOwn(nested, "value");
-    const hasDuration = ["statusExpiresAtMs", "statusCreatedAtMs"].some(key => Object.hasOwn(proto ?? {}, key) || nested && Object.hasOwn(nested, key));
+    const parsed = parseStatusProto(proto);
+    if (!parsed.mentionsStatus) return;
+    if (parsed.shape === "unsupported") {
+        configuredSignatureHealth = "configured_status_proto_shape_unsupported";
+        statusHooks = false;
+        patchError = configuredSignatureHealth;
+        provenance.clear(); saveState = "unavailable";
+        engine?.external("unknown");
+        notify();
+        return;
+    }
+    const { hasStatus } = parsed;
+    const { hasDuration } = parsed;
     if (!hasStatus && !hasDuration) return;
     const token = provenance.take(proto);
     const ownSaveEcho = provenance.takeSaveAck(proto);
@@ -146,8 +168,8 @@ function statusUpdate(event: any) {
     const expected = expectedManualStatus;
     const matchesManual = isManualSelectionUpdate({
         expected: expected !== null && expected.until >= Date.now(), changed, local: event.local, partial: event.partial,
-        targetMatches: expected !== null && (!hasStatus || status(nested.value) === expected.target) && status(Configured.getSetting()) === expected.target,
-        expiryMatches: expected !== null && matchesManualExpiry(expected.expiresAt, proto.statusExpiresAtMs ?? nested?.statusExpiresAtMs)
+        targetMatches: expected !== null && hasStatus && parsed.configured === expected.target && status(Configured.getSetting()) === expected.target,
+        expiryMatches: expected !== null && parsed.hasExpiresAtMs && matchesManualExpiry(expected.expiresAt, parsed.expiresAtMs)
     });
     if (matchesManual) expectedManualStatus = null;
     // Full user-settings snapshots and presence/session events are not manual
@@ -168,19 +190,27 @@ async function poll() {
         validateHooks();
         void persistPending();
         await Native.lease(true);
-        const [d, a, camera] = await Promise.all([Native.displaySnapshot(), Native.activitySnapshot(), Native.pipeWireSnapshot()]);
+        const [detectors, camera] = await Promise.all([Native.detectorSnapshot(), Native.pipeWireSnapshot()]);
         if (epoch !== lifecycle || !engine?.running) return;
-        display = displayDetector.observe(d);
-        activity = activityDetector.observe(a, Date.now());
+        const sampledAt = Date.now();
+        helperSnapshotSequence = Number.isInteger(detectors?.sequence) ? detectors.sequence : null;
+        helperSnapshotAgeMs = typeof detectors?.at === "number" && Number.isFinite(detectors.at) ? Math.max(0, sampledAt - detectors.at) : null;
+        helperSnapshotHealth = typeof detectors?.reason === "string" ? detectors.reason : "snapshot_unavailable";
+        activityIdleMs = typeof detectors?.activity?.idleMs === "number" ? detectors.activity.idleMs : null;
+        activitySampleAgeMs = typeof detectors?.activity?.at === "number" && Number.isFinite(detectors.activity.at) ? Math.max(0, sampledAt - detectors.activity.at) : null;
+        display = displayDetector.observe(detectors?.observation ?? null);
+        activity = activityDetector.observe((detectors?.activity ?? null) as ActivityObservation | null, sampledAt);
+        activityContinuityReason = activityDetector.continuityResetReason;
+        idleQualificationRemainingMs = activityDetector.remainingQualificationMs(sampledAt);
         nativeIdleReconcile?.();
         pwCamera = camera === null ? UNKNOWN("PipeWire", "pipewire_unavailable", Date.now()) : pipewireDetector.parse(camera, Date.now());
         tracks.prune();
         localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: tracks.live ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_muted_or_disabled" : "no_observed_live_camera_track" };
         engine.sample();
         const s = read();
-        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, activityReason: activity.reason, activityValue: activity.value, nativeIdleAttributed: s.nativeIdleAttributed, saveState, saveHooks, statusHooks, nativeIdleHook, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, storageHealth: persistenceHealth.summary }));
+        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, activityReason: activity.reason, activityValue: activity.value, activityIdleMs, idleRemainingMs: idleQualificationRemainingMs, activitySampleAgeMs, activityContinuityReason, helperSnapshotSequence, helperSnapshotAgeMs, helperSnapshotHealth, helperLeaseHealthy: detectors?.helperLeaseHealthy === true, pendingWritePhase: engine?.pendingPhase, pausedRules: engine?.pausedDetails, configuredSignatureHealth, nativeIdleAttributed: s.nativeIdleAttributed, saveState, saveHooks, statusHooks, nativeIdleHook, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, storageHealth: persistenceHealth.summary }));
         notify();
-    } catch { if (epoch === lifecycle) { display = UNKNOWN("GNOME", "native_poll_failed"); activity = UNKNOWN("GNOME system-wide input", "native_poll_failed", Date.now()); pwCamera = UNKNOWN("PipeWire", "native_poll_failed"); engine?.sample(); } }
+    } catch { if (epoch === lifecycle) { display = UNKNOWN("GNOME", "native_poll_failed"); activity = UNKNOWN("GNOME system-wide input", "native_poll_failed", Date.now()); pwCamera = UNKNOWN("PipeWire", "native_poll_failed"); helperSnapshotHealth = "native_poll_failed"; helperSnapshotSequence = null; helperSnapshotAgeMs = null; activityIdleMs = null; activitySampleAgeMs = null; activityContinuityReason = "native_poll_failed"; idleQualificationRemainingMs = null; engine?.sample(); } }
     finally { polling = false; }
 }
 function mode() {
@@ -202,7 +232,8 @@ function Panel() {
         <Forms.FormTitle>PresenceGuard — {mode()}</Forms.FormTitle>
         <Forms.FormText>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Forms.FormText>
         <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Status hooks: {statusHooks ? "ready" : "unavailable"}; native Idle: {nativeIdleHook ? "ready" : "unavailable"}; save lifecycle: {saveHooks ? "tracked" : "unavailable"} ({patchError}).</Forms.FormText>
-        <Forms.FormText>Desktop activity: {s.activity.value} — {s.activity.reason}. Native Idle: {String(s.nativeIdle)} (attributed: {String(s.nativeIdleAttributed)}). Configured-status save evidence: {saveState}.</Forms.FormText>
+        <Forms.FormText>Desktop activity: {s.activity.value} — {s.activity.reason}. Idle counter: {activityIdleMs === null ? "unavailable/input sample pending" : `${Math.max(0, Math.round(activityIdleMs / 1000))}s`}; qualification remaining: {idleQualificationRemainingMs === null ? "unavailable" : `${Math.ceil(idleQualificationRemainingMs / 1000)}s`}; sample age: {activitySampleAgeMs === null ? "unavailable" : `${activitySampleAgeMs}ms`}; continuity: {activityContinuityReason ?? "continuous"}; helper: {helperSnapshotHealth} (sequence {helperSnapshotSequence ?? "unavailable"}). Configured-status signature: {configuredSignatureHealth}. Native Idle: {String(s.nativeIdle)} (attributed: {String(s.nativeIdleAttributed)}). Configured-status save evidence: {saveState}; pending write: {engine?.pendingPhase ?? "none"}.</Forms.FormText>
+        {engine?.pausedDetails.map(item => <Forms.FormText key={item.rule}>Paused {item.rule}: {item.reason} at {new Date(item.at).toLocaleString()}</Forms.FormText>)}
         <Forms.FormText>Local storage: {persistenceHealth.summary}. Pending history events: {historyWriter.pendingCount}.</Forms.FormText>
         <Forms.FormText>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Forms.FormText>
         <Forms.FormText>{describeDisplayFacts(s.display.facts)}. These facts do not prove the blanking cause.</Forms.FormText>
@@ -219,7 +250,7 @@ function Panel() {
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>
-        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}{e.saveState ? ` · save ${e.saveState}` : ""}</Forms.FormText><Forms.FormText>Activity {e.activity?.value ?? "unavailable"}: {e.activity?.reason ?? "legacy history"} · native Idle attributed {String(e.nativeIdleAttributed ?? false)} · Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
+        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}{e.saveState ? ` · save ${e.saveState}` : ""}{e.repeatCount && e.repeatCount > 1 ? ` · ${e.repeatCount} repeats (${new Date(e.firstAt ?? e.at).toLocaleTimeString()}–${new Date(e.lastAt ?? e.at).toLocaleTimeString()})` : ""}</Forms.FormText><Forms.FormText>Activity {e.activity?.value ?? "unavailable"}: {e.activity?.reason ?? "legacy history"} · native Idle attributed {String(e.nativeIdleAttributed ?? false)} · Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
     </div>;
 }
 function openPanel() { openModal(props => <Modal {...props} title="PresenceGuard"><Panel /></Modal>); }
@@ -259,7 +290,9 @@ export default definePlugin({
     },
     saveStarted(owner: object, proto: unknown) { return provenance.saveStarted(owner, proto); },
     saveSucceeded(owner: object, context: any, proto: object) {
-        if (provenance.saveSucceeded(owner, context, proto)) { saveState = "succeeded"; engine?.saveOutcome(context.token, "succeeded", "correlated_configured_status_save_acknowledgement"); }
+        const result = provenance.saveSucceeded(owner, context, proto);
+        if (result === "succeeded") { saveState = "succeeded"; engine?.saveOutcome(context.token, "succeeded", "correlated_configured_status_save_acknowledgement"); }
+        else if (result === "unavailable") { saveState = "unavailable"; engine?.saveOutcome(context.token, "unavailable", "configured_status_save_acknowledgement_unmatched"); }
     },
     saveFailed(owner: object, context: any, kind: string) {
         if (!context) return;
@@ -312,6 +345,7 @@ export default definePlugin({
         nativeIdleHook = false; nativeIdleReconcile = undefined; nativeIdleAttributed = false; nativeIdlePendingUntil = 0;
         saveState = "unavailable"; expectedManualStatus = null; configuredSignature = currentConfiguredSignature();
         display = UNKNOWN("GNOME"); activity = UNKNOWN("GNOME system-wide input"); pwCamera = UNKNOWN("PipeWire"); localCamera = UNKNOWN("Vesktop");
+        helperSnapshotSequence = null; helperSnapshotAgeMs = null; helperSnapshotHealth = "starting"; activityIdleMs = null; activitySampleAgeMs = null; activityContinuityReason = null; idleQualificationRemainingMs = null;
         activityDetector.reset(); displayDetector.reset(); pipewireDetector.reset();
         validateHooks();
         try { connectionFresh = Gateway.isConnected() && !!UserStore.getCurrentUser() && UserSettingsProtoStore.hasLoaded(1); } catch { connectionFresh = false; }

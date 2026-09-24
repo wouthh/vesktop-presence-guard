@@ -13,10 +13,14 @@ export class HistoryWriter {
     private pending: HistoryEvent[] = [];
     private draining?: Promise<void>;
     private clearing?: Promise<void>;
+    private clearingEvents: HistoryEvent[] = [];
     private paused = false;
     constructor(private append: (event: HistoryEvent) => Promise<unknown>, private now: () => number) {}
     get pendingCount() { return this.pending.length; }
-    enqueue(event: HistoryEvent) { this.pending = retain([...this.pending, event], this.now()); }
+    enqueue(event: HistoryEvent) {
+        if (this.clearing) this.clearingEvents = retain([...this.clearingEvents, event], this.now());
+        else this.pending = retain([...this.pending, event], this.now());
+    }
     flush(): Promise<void> {
         if (this.clearing) return this.clearing.then(() => this.flush());
         if (this.draining) return this.draining;
@@ -34,15 +38,18 @@ export class HistoryWriter {
     }
     clear(operation: () => Promise<unknown>): Promise<void> {
         if (this.clearing) return this.clearing;
-        const covered = new Set(this.pending);
         this.paused = true;
+        this.clearingEvents = [];
         this.clearing = (async () => {
             // An already-issued append completes before the native clear. Never
             // replay an older queued event after a successful user clear.
             await this.draining?.catch(() => undefined);
             await operation();
-            this.pending = this.pending.filter(event => !covered.has(event));
-        })().finally(() => { this.paused = false; this.clearing = undefined; });
+            this.pending = this.clearingEvents;
+        })().catch(error => {
+            this.pending = retain([...this.pending, ...this.clearingEvents], this.now());
+            throw error;
+        }).finally(() => { this.paused = false; this.clearingEvents = []; this.clearing = undefined; });
         return this.clearing;
     }
 }

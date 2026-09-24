@@ -31,6 +31,17 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Renderer reconnects preserve an activity recovery boundary. A high post-resume
   counter requires fresh five-minute continuity before Idle; a fresh one-shot
   input remains immediately recognizable.
+- A one-shot input that invalidates an in-flight counter read remains positive
+  activity evidence while that counter is refreshed. Snapshot readers consume
+  activity and display facts from one fresh, sequenced helper generation.
+- Cancellation before local mutation is not a write failure and does not pause
+  automation. Genuine updater, confirmation, and terminal-save failures remain
+  visible and pause the affected rule.
+- Parse only supported configured-status group/root envelopes and wrappers;
+  unknown required shapes fail closed. Save acknowledgements require the exact
+  queued updater operation and compatible parsed status/duration evidence.
+- Retain no more than 500 history events for seven days, reserving 400 for
+  status/control and 100 for coalesced detector summaries.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.

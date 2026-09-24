@@ -5,6 +5,7 @@
  */
 
 // SPDX-License-Identifier: GPL-3.0-or-later
+import { WriteCancelledBeforeMutation } from "./mutator";
 import { type Adapter, type Clock, fresh, type HistoryEvent, type Options, type Rule, type Snapshot, type Source, type Status, type WriteToken } from "./types";
 
 export class PresenceEngine {
@@ -18,7 +19,7 @@ export class PresenceEngine {
     private owner: { status: Status; rule: Rule; token: WriteToken } | null = null;
     private latestAppliedWrite: WriteToken | null = null;
     private terminalSaveTokens = new WeakSet<WriteToken>();
-    private paused = new Set<Rule>();
+    private paused = new Map<Rule, { reason: string; at: number }>();
     private decisionKey = "";
     private detectorEpoch = -Infinity;
     private manualPending: Status | null = null;
@@ -27,13 +28,18 @@ export class PresenceEngine {
     constructor(private adapter: Adapter, private clock: Clock, private options: Options) {}
 
     get ownership() { return this.owner ? { status: this.owner.status, rule: this.owner.rule } : null; }
-    get pausedRules() { return [...this.paused]; }
+    get pausedRules() { return [...this.paused.keys()]; }
+    get pausedDetails() { return [...this.paused].map(([rule, detail]) => ({ rule, ...detail })); }
+    get pendingPhase() { return this.timer !== undefined ? "debounce" : this.pending || this.busy ? "updater_loading_or_local_apply" : "idle"; }
     get running() { return !this.stopped; }
 
     private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"]) {
-        this.latestDecision = reason;
         if (!this.options.observe) return;
-        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, display: { ...s.display }, camera: { ...s.camera } });
+        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: kind === "observation" || kind === "simulation" ? "detector" : "control", display: { ...s.display }, camera: { ...s.camera } });
+    }
+
+    private pause(rule: Rule, reason: string) {
+        if (!this.paused.has(rule)) this.paused.set(rule, { reason, at: this.clock.now() });
     }
 
     private invalidate(keepOwner = false) {
@@ -58,18 +64,18 @@ export class PresenceEngine {
         this.invalidate();
         this.manualPending = value === "online" ? null : value;
         if (value === "online") this.paused.clear();
-        else { this.paused.add("idle"); for (const rule of affected) this.paused.add(rule); }
+        else { this.pause("idle", "manual_status_selection"); for (const rule of affected) this.pause(rule, "manual_status_selection"); }
         this.decisionKey = "";
         this.emit("boundary", "manual_selection_ownership_revoked", "manual", this.adapter.read(), undefined, value);
         // The caller schedules a fresh sample after Discord processes the action.
     }
 
     external(source: Source = "unknown") {
-        this.paused.add("idle");
-        this.paused.add("camera");
-        if (this.owner) this.paused.add(this.owner.rule);
-        if (this.pending) this.paused.add(this.pending.rule);
-        if (this.scheduledRule) this.paused.add(this.scheduledRule);
+        this.pause("idle", "unattributed_configured_status_intervention");
+        this.pause("camera", "unattributed_configured_status_intervention");
+        if (this.owner) this.pause(this.owner.rule, "unattributed_configured_status_intervention");
+        if (this.pending) this.pause(this.pending.rule, "unattributed_configured_status_intervention");
+        if (this.scheduledRule) this.pause(this.scheduledRule, "unattributed_configured_status_intervention");
         this.invalidate();
         this.emit("boundary", "unattributed_status_write", source, this.adapter.read());
     }
@@ -110,7 +116,7 @@ export class PresenceEngine {
             if (this.latestAppliedWrite === token) this.latestAppliedWrite = null;
         }
         if (state === "failed" && !wasAlreadyTerminal && (failedPendingWrite || failedOwnedWrite || failedLatestWrite)) {
-            this.paused.add(token.rule);
+            this.pause(token.rule, `configured_status_save_${state}`);
             // A delayed save failure may belong to the current owner while a
             // different rule is already writing. Revoke only this token's
             // pending mutation; never cancel unrelated scheduled or in-flight work.
@@ -145,7 +151,7 @@ export class PresenceEngine {
             this.pending = null;
             this.emit("confirmation", "configured_status_locally_applied_effective_presence_observed_separately", "plugin", s);
         } else if (this.owner && s.configured !== this.owner.status) {
-            this.paused.add(this.owner.rule);
+            this.pause(this.owner.rule, "configured_status_changed_while_plugin_owned");
             this.invalidate();
             this.emit("skip", "status_conflict_rule_paused", source, s);
         }
@@ -156,7 +162,7 @@ export class PresenceEngine {
         if (this.previous && JSON.stringify(s.display.facts) !== JSON.stringify(this.previous.display.facts)) {
             this.emit("observation", "display_facts_observed_cause_not_proven", "unknown", s, s.effective);
         }
-        if (!this.previous || s.activity.value !== this.previous.activity.value || s.activity.reason !== this.previous.activity.reason || s.nativeIdleAttributed !== this.previous.nativeIdleAttributed) {
+        if (!this.previous || s.activity.value !== this.previous.activity.value || s.nativeIdleAttributed !== this.previous.nativeIdleAttributed) {
             this.emit("observation", s.activity.value === "active" ? "desktop_activity_confirmed" : s.activity.value === "inactive" ? "desktop_inactivity_confirmed" : "desktop_activity_uncertain", "unknown", s, s.effective);
         }
         this.previous = s;
@@ -216,7 +222,8 @@ export class PresenceEngine {
         const s = this.adapter.read();
         const simulation = !this.options.idle && !this.options.camera;
         const d = this.decide(s, simulation);
-        const key = JSON.stringify([simulation, d, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.activity.reason, s.display.value, s.display.reason, s.camera.value, s.camera.reason, this.ownership]);
+        this.latestDecision = simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason;
+        const key = JSON.stringify([simulation, d.target ?? null, d.rule ?? null, d.reason, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.display.value, s.camera.value, this.ownership, this.pausedRules]);
         if (key !== this.decisionKey) {
             this.decisionKey = key;
             this.emit(simulation ? "simulation" : "skip", simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason, "plugin", s, undefined, d.target ?? s.effective);
@@ -238,15 +245,21 @@ export class PresenceEngine {
             this.emit("request", d.reason, "plugin", this.adapter.read(), undefined, token.target);
             void this.adapter.write(token, guard).then(() => {
                 if (token.generation === this.generation && this.pending === token) {
-                    this.paused.add(token.rule);
+                    this.pause(token.rule, "configured_status_update_not_locally_confirmed");
                     this.invalidate();
                     this.emit("error", "write_not_locally_confirmed_rule_paused", "plugin", this.adapter.read());
                 }
-            }).catch(() => {
-                if (token.generation === this.generation) {
-                    this.paused.add(token.rule);
-                    this.invalidate();
-                    this.emit("error", "write_failed_rule_paused", "plugin", this.adapter.read());
+            }).catch(error => {
+                if (token.generation === this.generation && this.pending === token) {
+                    if (error instanceof WriteCancelledBeforeMutation) {
+                        this.pending = null;
+                        this.decisionKey = "";
+                        this.emit("skip", "write_cancelled_before_local_mutation_reevaluating", "plugin", this.adapter.read());
+                    } else {
+                        this.pause(token.rule, "configured_status_write_failed");
+                        this.invalidate();
+                        this.emit("error", "write_failed_rule_paused", "plugin", this.adapter.read());
+                    }
                 }
             }).finally(() => { this.busy = false; this.consider(); });
         }, 2_000);

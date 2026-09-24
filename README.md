@@ -29,13 +29,20 @@ SIMULATION / would… decisions are hypothetical, never status writes.
 
 History is profile-local in the native Vencord data directory's `PresenceGuard`
 subdirectory, outside cloud-synced settings. It retains at most 500 events and
-seven days (pruned on reads/writes while running), uses restrictive permissions
+seven days (pruned on reads/writes while running), reserving up to 400 entries
+for status/control events and 100 for detector diagnostics. Repeated detector
+decisions are summarized by reason and 15-minute window with first/last times
+and a count, so polling noise cannot evict the status-write trail. Legacy
+history remains readable. It uses restrictive permissions
 and atomic writes with temporary-file cleanup on failure, and contains no
 account IDs. Clear it in the panel or explicitly export JSON to a chosen local
 file. Nothing is uploaded. Local observations do not independently prove what
 another session or user sees. Confirmation means Discord applied the local
 update; it does not prove a successful server save.
-The panel reports local storage failures separately from status-hook health.
+The panel reports local storage failures separately from status-hook health. It
+also exposes helper sequence and freshness, the GNOME idle counter, remaining
+qualification time, the last continuity reset, configured-signature support,
+native Idle attribution, pending write stage and each paused rule's cause/time.
 Failures remain visible until the corresponding operation succeeds. Diagnostic
 write failures do not invalidate otherwise healthy detector observations. Native
 JSON reads reject non-regular files without waiting on a FIFO.
@@ -71,6 +78,14 @@ alone never grants ownership. A one-shot Mutter user-active watch restores
 configured Online on genuine input in any desktop application, while the plugin
 still owns Idle. Display blanking, locking, focus, aggregate presence and session
 events do not drive the inactivity timer.
+
+A guarded cancellation before the local settings mutation clears only that
+pending operation and allows the same fresh evidence to be evaluated again. A
+real updater error, missing local confirmation, or terminal correlated save
+failure remains visible and pauses the affected rule; polling does not retry a
+failed write loop. The status adapter accepts the verified status-group and root
+settings envelopes, including status-only updates and wrapped timestamps. An
+unknown required envelope makes automation unavailable with a visible reason.
 
 The local panel/history distinguishes configured status, effective presence,
 native Idle, ownership, local update confirmation and the updater's save

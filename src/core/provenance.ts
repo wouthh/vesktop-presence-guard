@@ -5,21 +5,23 @@
  */
 
 // SPDX-License-Identifier: GPL-3.0-or-later
+import { type ParsedStatusProto,parseStatusProto } from "./statusProto";
 import type { WriteToken } from "./types";
 export interface SaveContext {
     token: WriteToken;
-    expected: { value: unknown; expiresAtMs?: unknown; createdAtMs?: unknown };
+    expected: ParsedStatusProto;
 }
+export type SaveAckResult = "succeeded" | "unavailable" | "ignored";
 
 function statusFields(proto: any) {
-    if (!proto?.status || typeof proto.status !== "object") return null;
-    return { value: proto.status.value, expiresAtMs: proto.statusExpiresAtMs, createdAtMs: proto.statusCreatedAtMs };
+    const parsed = parseStatusProto(proto);
+    return parsed.hasStatus ? parsed : null;
 }
 
 function matchesStatus(expected: SaveContext["expected"], actual: ReturnType<typeof statusFields>) {
-    if (!actual || expected.value !== actual.value) return false;
-    if (expected.expiresAtMs !== undefined && expected.expiresAtMs !== actual.expiresAtMs) return false;
-    if (expected.createdAtMs !== undefined && expected.createdAtMs !== actual.createdAtMs) return false;
+    if (!actual || expected.configured !== actual.configured) return false;
+    if (expected.hasExpiresAtMs && (!actual.hasExpiresAtMs || expected.expiresAtMs !== actual.expiresAtMs)) return false;
+    if (expected.hasCreatedAtMs && (!actual.hasCreatedAtMs || expected.createdAtMs !== actual.createdAtMs)) return false;
     return true;
 }
 
@@ -27,7 +29,7 @@ function matchesStatus(expected: SaveContext["expected"], actual: ReturnType<typ
 export class Provenance {
     private callbacks = new WeakMap<object, WriteToken>();
     private updates = new WeakMap<object, WriteToken>();
-    private updaterTokens = new WeakMap<object, WriteToken[]>();
+    private updaterTokens = new WeakMap<object, { token: WriteToken; expected: ParsedStatusProto | null }[]>();
     private activeTokens = new Set<WriteToken>();
     private latestLocalToken: WriteToken | null = null;
     private supersededTokens = new WeakSet<WriteToken>();
@@ -51,7 +53,7 @@ export class Provenance {
         const token = this.updates.get(proto);
         if (!token) return undefined;
         const queue = this.updaterTokens.get(updater) ?? [];
-        if (!queue.includes(token)) queue.push(token);
+        if (!queue.some(entry => entry.token === token)) queue.push({ token, expected: statusFields(proto) });
         this.updaterTokens.set(updater, queue);
         this.activeTokens.add(token);
         return token;
@@ -59,22 +61,21 @@ export class Provenance {
     saveStarted(updater: object, proto: unknown): SaveContext | undefined {
         const fields = statusFields(proto);
         const queue = this.updaterTokens.get(updater) ?? [];
-        let token: WriteToken | undefined;
-        for (let i = queue.length - 1; i >= 0; i--) {
-            if (fields?.value === queue[i].target) { token = queue[i]; break; }
-        }
-        if (!token || !fields || !this.activeTokens.has(token)) return undefined;
-        return { token, expected: fields };
+        if (!fields) return undefined;
+        const matches = queue.filter(entry => this.activeTokens.has(entry.token) && !this.supersededTokens.has(entry.token)
+            && entry.token.target === fields.configured && (!entry.expected || matchesStatus(entry.expected, fields)));
+        if (matches.length !== 1) return undefined;
+        return { token: matches[0].token, expected: fields };
     }
-    saveSucceeded(updater: object, context: SaveContext | undefined, proto: object) {
-        if (!context || !this.activeTokens.has(context.token)) return false;
+    saveSucceeded(updater: object, context: SaveContext | undefined, proto: object): SaveAckResult {
+        if (!context || !this.activeTokens.has(context.token)) return "ignored";
         this.activeTokens.delete(context.token);
         const queue = this.updaterTokens.get(updater) ?? [];
-        this.updaterTokens.set(updater, queue.filter(token => token !== context.token));
-        if (this.supersededTokens.has(context.token)) return false;
-        if (!matchesStatus(context.expected, statusFields(proto))) return false;
+        this.updaterTokens.set(updater, queue.filter(entry => entry.token !== context.token));
+        if (this.supersededTokens.has(context.token)) return "ignored";
+        if (!matchesStatus(context.expected, statusFields(proto))) return "unavailable";
         this.saveAcks.add(proto);
-        return true;
+        return "succeeded";
     }
     takeSaveAck(proto: unknown) {
         if (!proto || typeof proto !== "object" || !this.saveAcks.has(proto)) return false;
@@ -85,7 +86,7 @@ export class Provenance {
         if (!context || retrying || !this.activeTokens.has(context.token)) return;
         this.activeTokens.delete(context.token);
         const queue = this.updaterTokens.get(updater) ?? [];
-        this.updaterTokens.set(updater, queue.filter(token => token !== context.token));
+        this.updaterTokens.set(updater, queue.filter(entry => entry.token !== context.token));
     }
     clear() {
         this.callbacks = new WeakMap(); this.updates = new WeakMap();

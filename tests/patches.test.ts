@@ -41,7 +41,7 @@ test("save provenance follows the exact updater, queued token, and returned conf
     const context = p.saveStarted(updater, sent)!;
     const unrelated = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
     assert.equal(p.takeSaveAck(unrelated), false);
-    assert.equal(p.saveSucceeded(updater, context, unrelated), true);
+    assert.equal(p.saveSucceeded(updater, context, unrelated), "succeeded");
     assert.equal(p.takeSaveAck(unrelated), true);
     assert.equal(p.takeSaveAck(unrelated), false);
 });
@@ -51,8 +51,48 @@ test("save acknowledgement rejects a changed duration or a nonmatching configure
     const local = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
     p.register(callback, token); p.generated(callback, local); p.saveQueued(updater, local);
     const context = p.saveStarted(updater, local)!;
-    assert.equal(p.saveSucceeded(updater, context, { status: { value: "idle" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 500 }), false);
-    assert.equal(p.saveSucceeded(updater, context, { status: { value: "online" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 }), false);
+    assert.equal(p.saveSucceeded(updater, context, { status: { value: "idle" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 500 }), "unavailable");
+    assert.equal(p.saveSucceeded(updater, context, { status: { value: "online" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 }), "ignored");
+});
+test("save provenance parses nested root status envelopes and status-only acknowledgements", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 8, target: "idle" as const, rule: "idle" as const };
+    const local = { status: { status: { value: "idle" }, statusExpiresAtMs: { value: "5000" }, statusCreatedAtMs: { value: "1000" } } };
+    p.register(callback, token); p.generated(callback, local); p.saveQueued(updater, local); assert.equal(p.take(local), token);
+    const sent = { status: { status: { value: "idle" }, statusExpiresAtMs: "5000", statusCreatedAtMs: "1000" } };
+    const context = p.saveStarted(updater, sent)!;
+    const ack = { status: { status: { value: "idle" }, statusExpiresAtMs: { value: "5000" }, statusCreatedAtMs: { value: "1000" } } };
+    assert.equal(p.saveSucceeded(updater, context, ack), "succeeded");
+    assert.equal(p.takeSaveAck(ack), true);
+
+    const statusOnly = { status: { status: { value: "online" } } };
+    const onlineToken = { generation: 9, target: "online" as const, rule: "idle" as const };
+    const onlineCallback = () => {};
+    p.register(onlineCallback, onlineToken); p.generated(onlineCallback, statusOnly); p.saveQueued(updater, statusOnly);
+    const sentStatusOnly = { status: { status: { value: "online" } } };
+    const statusOnlyContext = p.saveStarted(updater, sentStatusOnly)!;
+    assert.equal(p.saveSucceeded(updater, statusOnlyContext, { status: { status: { value: "online" } } }), "succeeded");
+});
+test("save provenance refuses ambiguous same-status queued operations", () => {
+    const p = new Provenance(), updater = {};
+    const first = { generation: 1, target: "idle" as const, rule: "idle" as const };
+    const second = { generation: 2, target: "idle" as const, rule: "idle" as const };
+    const firstCallback = () => {}, secondCallback = () => {};
+    const firstProto = { status: { value: "idle" } }, secondProto = { status: { value: "idle" } };
+    p.register(firstCallback, first); p.generated(firstCallback, firstProto); p.saveQueued(updater, firstProto);
+    p.register(secondCallback, second); p.generated(secondCallback, secondProto); p.saveQueued(updater, secondProto);
+    assert.equal(p.saveStarted(updater, { status: { value: "idle" } }), undefined);
+});
+test("save provenance disambiguates queued same-status writes by configured duration", () => {
+    const p = new Provenance(), updater = {};
+    const first = { generation: 1, target: "idle" as const, rule: "idle" as const };
+    const second = { generation: 2, target: "idle" as const, rule: "idle" as const };
+    const firstCallback = () => {}, secondCallback = () => {};
+    const firstProto = { status: { value: "idle" }, statusExpiresAtMs: "1000", statusCreatedAtMs: "100" };
+    const secondProto = { status: { value: "idle" }, statusExpiresAtMs: "2000", statusCreatedAtMs: "200" };
+    p.register(firstCallback, first); p.generated(firstCallback, firstProto); p.saveQueued(updater, firstProto);
+    p.register(secondCallback, second); p.generated(secondCallback, secondProto); p.saveQueued(updater, secondProto);
+    assert.equal(p.saveStarted(updater, { status: { value: "idle" }, statusExpiresAtMs: "2000", statusCreatedAtMs: "200" })?.token, second);
 });
 test("a delayed save acknowledgement is rejected after a newer configured write is locally applied", () => {
     const p = new Provenance(), updater = {}, idleCallback = () => {}, onlineCallback = () => {};
@@ -67,9 +107,9 @@ test("a delayed save acknowledgement is rejected after a newer configured write 
     // markDirty queues before the local USER_SETTINGS_PROTO_UPDATE reaches take().
     p.saveQueued(updater, onlineLocal); assert.equal(p.take(onlineLocal), onlineToken);
     const onlineContext = p.saveStarted(updater, onlineLocal)!;
-    assert.equal(p.saveSucceeded(updater, onlineContext, onlineLocal), true);
+    assert.equal(p.saveSucceeded(updater, onlineContext, onlineLocal), "succeeded");
     const lateIdleEcho = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
-    assert.equal(p.saveSucceeded(updater, context, lateIdleEcho), false);
+    assert.equal(p.saveSucceeded(updater, context, lateIdleEcho), "ignored");
     assert.equal(p.takeSaveAck(lateIdleEcho), false);
 });
 test("rate-limit retry keeps exact save context; terminal failures discard it", () => {
@@ -90,7 +130,7 @@ test("revoked manual intervention prevents a late same-value save from being cor
     const context = p.saveStarted(updater, proto)!;
     p.clear();
     const late = { status: { value: "idle" } };
-    assert.equal(p.saveSucceeded(updater, context, late), false);
+    assert.equal(p.saveSucceeded(updater, context, late), "ignored");
     assert.equal(p.takeSaveAck(late), false);
     assert.equal(p.saveStarted(updater, late), undefined);
 });

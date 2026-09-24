@@ -102,15 +102,47 @@ test("system-wide input watch recognizes one brief activity pulse and carries it
 });
 test("duplicate helper snapshots at the inactivity boundary do not restart qualification", () => {
     const d = new ActivityDetector();
-    assert.equal(d.observe(activitySample({ idleMs: IDLE_THRESHOLD_MS - 1000 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 1000, idleMs: IDLE_THRESHOLD_MS - 1000 })).value, "unknown");
     const crossed = activitySample({ at: 2000, idleMs: IDLE_THRESHOLD_MS });
-    assert.equal(d.observe(crossed).value, "inactive");
-    assert.equal(d.observe(crossed).value, "inactive");
-    assert.equal(d.observe(activitySample({ at: 4000, idleMs: IDLE_THRESHOLD_MS + 2000 })).value, "inactive");
+    assert.equal(d.observe(crossed).reason, "activity_boundary_requalifying");
+    assert.equal(d.observe(crossed).reason, "activity_boundary_requalifying");
+    for (let at = 12000; at <= 292000; at += 10_000) {
+        assert.equal(d.observe(activitySample({ at, idleMs: IDLE_THRESHOLD_MS + at - 2000 })).value, "unknown");
+    }
+    assert.equal(d.observe(activitySample({ at: 302000, idleMs: IDLE_THRESHOLD_MS + 300_000 })).value, "inactive");
 });
 test("initial fresh input event is recognized without a prior poll baseline", () => {
     const d = new ActivityDetector();
     assert.equal(d.observe(activitySample({ activitySerial: 1, activityAt: 900 })).value, "active");
+});
+test("fresh input survives a counter sample invalidated in flight", () => {
+    const d = new ActivityDetector();
+    d.observe(activitySample());
+    const pulse = activitySample({ at: 2000, idleMs: null, suspended: false, activitySerial: 1, activityAt: 1900, inputOnly: true });
+    assert.equal(d.observe(pulse).value, "active");
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 1100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    let result = "active";
+    for (let at = 13000; at < 302000; at += 10_000) result = d.observe(activitySample({ at, idleMs: at - 1900, activitySerial: 1, activityAt: 1900 })).value;
+    assert.equal(result, "active");
+    assert.equal(d.observe(activitySample({ at: 302000, idleMs: 300_100, activitySerial: 1, activityAt: 1900 })).value, "inactive");
+});
+test("continuity diagnostics report reset cause and remaining inactivity qualification", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample({ at: 1000, idleMs: IDLE_THRESHOLD_MS + 5000 })).value, "unknown");
+    assert.equal(d.continuityResetReason, "activity_continuity_starting");
+    assert.equal(d.remainingQualificationMs(1000), IDLE_THRESHOLD_MS);
+    assert.equal(d.remainingQualificationMs(2000), IDLE_THRESHOLD_MS - 1000);
+});
+test("stale, suspended, and counter-bearing input-only snapshots are rejected", () => {
+    for (const extra of [
+        { at: 20000, activityAt: 1000 },
+        { suspended: true },
+        { idleMs: 1 }
+    ]) {
+        const d = new ActivityDetector();
+        const sample = activitySample({ at: 2000, idleMs: null, activitySerial: 1, activityAt: 1900, inputOnly: true, ...extra } as Partial<ActivityObservation>);
+        assert.notEqual(d.observe(sample, 2000).value, "active");
+    }
 });
 test("provider restart and low counter do not fabricate activity", () => {
     const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 90000 }));
@@ -131,22 +163,22 @@ test("an unavailable activity interval keeps a recovery boundary before inactivi
     assert.equal(d.observe(null, 2000).value, "unknown");
     const replacement = activitySample({ at: 100000, idleMs: IDLE_THRESHOLD_MS + 100000, provider: "replacement" });
     assert.equal(d.observe(replacement).reason, "activity_recovery_boundary");
-    assert.equal(d.observe(activitySample({ ...replacement, at: 102000, idleMs: replacement.idleMs + 2000 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ ...replacement, at: 102000, idleMs: replacement.idleMs! + 2000 })).value, "unknown");
     let result = "unknown";
-    for (let at = 112000; at <= 402000; at += 10000) result = d.observe(activitySample({ ...replacement, at, idleMs: replacement.idleMs + at - replacement.at })).value;
+    for (let at = 112000; at <= 402000; at += 10000) result = d.observe(activitySample({ ...replacement, at, idleMs: replacement.idleMs! + at - replacement.at })).value;
     assert.equal(result, "inactive");
 });
 test("reconnect reset preserves a five-minute recovery boundary for an already-high idle counter", () => {
     const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 90_000 })); d.reset(true);
     const resumed = activitySample({ at: 100_000, idleMs: IDLE_THRESHOLD_MS + 100_000, provider: "post-resume-epoch" });
     assert.equal(d.observe(resumed).reason, "activity_recovery_boundary");
-    assert.equal(d.observe(activitySample({ ...resumed, at: 102_000, idleMs: resumed.idleMs + 2_000 })).reason, "activity_boundary_requalifying");
+    assert.equal(d.observe(activitySample({ ...resumed, at: 102_000, idleMs: resumed.idleMs! + 2_000 })).reason, "activity_boundary_requalifying");
     let value: string = "unknown";
     for (let at = 112_000; at < resumed.at + IDLE_THRESHOLD_MS; at += 10_000) {
-        value = d.observe(activitySample({ ...resumed, at, idleMs: resumed.idleMs + at - resumed.at })).value;
+        value = d.observe(activitySample({ ...resumed, at, idleMs: resumed.idleMs! + at - resumed.at })).value;
     }
     assert.equal(value, "unknown");
-    assert.equal(d.observe(activitySample({ ...resumed, at: resumed.at + IDLE_THRESHOLD_MS, idleMs: resumed.idleMs + IDLE_THRESHOLD_MS })).value, "inactive");
+    assert.equal(d.observe(activitySample({ ...resumed, at: resumed.at + IDLE_THRESHOLD_MS, idleMs: resumed.idleMs! + IDLE_THRESHOLD_MS })).value, "inactive");
 });
 test("a fresh Mutter input pulse still bypasses reconnect inactivity requalification", () => {
     const d = new ActivityDetector(); d.observe(activitySample()); d.reset(true);
