@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HistoryWriter } from "../src/core/historyWriter";
-import { MAX_EVENTS, RETENTION_MS } from "../src/core/history";
+import { MAX_EVENTS, retain, RETENTION_MS } from "../src/core/history";
 import { UNKNOWN, type HistoryEvent } from "../src/core/types";
 const event = (reason: string, at = 100000): HistoryEvent => ({ at, reason, kind: "observation", source: "unknown", previous: "online", status: "idle", configured: "online", aggregate: "unknown", owned: false, display: UNKNOWN("synthetic"), camera: UNKNOWN("synthetic") });
 test("transient append failure retains the oldest event and retries before later events", async () => {
@@ -11,6 +11,17 @@ test("transient append failure retains the oldest event and retries before later
     writer.enqueue(event("first")); await assert.rejects(writer.flush(), /temporary_failure/); assert.equal(writer.pendingCount, 1);
     writer.enqueue(event("second")); await writer.flush();
     assert.deepEqual(attempts, ["first", "first", "second"]); assert.deepEqual(saved, ["first", "second"]); assert.equal(writer.pendingCount, 0);
+});
+test("enqueuing during a detector append does not replay the in-flight summary", async () => {
+    let release!: () => void; const saved: HistoryEvent[] = [];
+    const writer = new HistoryWriter(async e => { saved.push(e); if (saved.length === 1) await new Promise<void>(resolve => { release = resolve; }); }, () => 100001);
+    writer.enqueue(event("same_detector_reason", 100000));
+    const flushing = writer.flush();
+    writer.enqueue(event("same_detector_reason", 100001));
+    assert.equal(writer.pendingCount, 1);
+    release(); await flushing;
+    assert.equal(saved.length, 2);
+    assert.equal(retain(saved, 100001)[0].repeatCount, 2);
 });
 for (const failed of [false, true]) test(`clear ${failed ? "failure preserves" : "success removes"} older queued history while keeping new events`, async () => {
     let release!: () => void; const saved: string[] = [], attempts: string[] = [];

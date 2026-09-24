@@ -32,16 +32,20 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   counter requires fresh five-minute continuity before Idle; a fresh one-shot
   input remains immediately recognizable.
 - A one-shot input that invalidates an in-flight counter read remains positive
-  activity evidence while that counter is refreshed. Snapshot readers consume
+  activity evidence while that counter is refreshed; the stale counter alone is
+  withheld and independent display facts remain usable. Snapshot readers consume
   activity and display facts from one fresh, sequenced helper generation.
 - Cancellation before local mutation is not a write failure and does not pause
   automation. Genuine updater, confirmation, and terminal-save failures remain
   visible and pause the affected rule.
 - Parse only supported configured-status group/root envelopes and wrappers;
-  unknown required shapes fail closed. Save acknowledgements require the exact
-  queued updater operation and compatible parsed status/duration evidence.
+  unknown required shapes fail closed. Save acknowledgements require one exact
+  queued updater operation with compatible parsed status/duration evidence;
+  ambiguous, unparseable, or mismatched evidence never counts as success.
 - Retain no more than 500 history events for seven days, reserving 400 for
-  status/control and 100 for coalesced detector summaries.
+  status/control and 100 for coalesced detector summaries. Status changes use
+  the control reservation; uncertainty-reason changes remain distinct bounded
+  detector summaries, and an in-flight event keeps stable queue identity.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.

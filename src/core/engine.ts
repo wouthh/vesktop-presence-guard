@@ -33,9 +33,9 @@ export class PresenceEngine {
     get pendingPhase() { return this.timer !== undefined ? "debounce" : this.pending || this.busy ? "updater_loading_or_local_apply" : "idle"; }
     get running() { return !this.stopped; }
 
-    private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"]) {
+    private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"], importance?: HistoryEvent["importance"]) {
         if (!this.options.observe) return;
-        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: kind === "observation" || kind === "simulation" ? "detector" : "control", display: { ...s.display }, camera: { ...s.camera } });
+        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: importance ?? (kind === "observation" || kind === "simulation" ? "detector" : "control"), display: { ...s.display }, camera: { ...s.camera } });
     }
 
     private pause(rule: Rule, reason: string) {
@@ -115,8 +115,9 @@ export class PresenceEngine {
             this.terminalSaveTokens.add(token);
             if (this.latestAppliedWrite === token) this.latestAppliedWrite = null;
         }
-        if (state === "failed" && !wasAlreadyTerminal && (failedPendingWrite || failedOwnedWrite || failedLatestWrite)) {
-            this.pause(token.rule, `configured_status_save_${state}`);
+        const unusableAcknowledgement = state === "unavailable" && reason === "configured_status_save_acknowledgement_unmatched";
+        if ((state === "failed" || unusableAcknowledgement) && !wasAlreadyTerminal && (failedPendingWrite || failedOwnedWrite || failedLatestWrite)) {
+            this.pause(token.rule, unusableAcknowledgement ? "configured_status_save_acknowledgement_unmatched" : `configured_status_save_${state}`);
             // A delayed save failure may belong to the current owner while a
             // different rule is already writing. Revoke only this token's
             // pending mutation; never cancel unrelated scheduled or in-flight work.
@@ -157,12 +158,13 @@ export class PresenceEngine {
         }
         if (!this.previous || s.configured !== this.previous.configured || s.effective !== this.previous.effective || s.aggregate !== this.previous.aggregate) {
             const actualSource = ownConfirmation ? "plugin" : source;
-            this.emit("observation", s.configured === "online" && s.effective === "idle" && s.nativeIdle === true ? "configured_online_observed_native_idle" : "status_observed", actualSource, s);
+            const reason = s.configured === "online" && s.effective === "idle" && s.nativeIdle === true ? "configured_online_observed_native_idle" : "status_observed";
+            this.emit("observation", reason, actualSource, s, undefined, undefined, undefined, "control");
         }
         if (this.previous && JSON.stringify(s.display.facts) !== JSON.stringify(this.previous.display.facts)) {
             this.emit("observation", "display_facts_observed_cause_not_proven", "unknown", s, s.effective);
         }
-        if (!this.previous || s.activity.value !== this.previous.activity.value || s.nativeIdleAttributed !== this.previous.nativeIdleAttributed) {
+        if (!this.previous || s.activity.value !== this.previous.activity.value || s.activity.reason !== this.previous.activity.reason || s.nativeIdleAttributed !== this.previous.nativeIdleAttributed) {
             this.emit("observation", s.activity.value === "active" ? "desktop_activity_confirmed" : s.activity.value === "inactive" ? "desktop_inactivity_confirmed" : "desktop_activity_uncertain", "unknown", s, s.effective);
         }
         this.previous = s;

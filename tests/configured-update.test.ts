@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isConfiguredIntervention, isManualSelectionUpdate, matchesManualExpiry, type ConfiguredUpdateEvidence } from "../src/core/configured-update";
+import { isConfiguredIntervention, isManualSelectionUpdate, matchesManualExpiry, matchesManualSelectionExpiry, type ConfiguredUpdateEvidence } from "../src/core/configured-update";
 
 const evidence = (extra: Partial<ConfiguredUpdateEvidence> = {}): ConfiguredUpdateEvidence => ({
     hasConfiguredStatus: true, changed: true, local: false, partial: true,
@@ -39,6 +39,11 @@ test("picker expiry correlation accepts the immediate local write and rejects an
     assert.equal(matchesManualExpiry(3_600_000, 3_601_000), true);
     assert.equal(matchesManualExpiry(3_600_000, 1_800_000), false);
     assert.equal(matchesManualExpiry(0, undefined), false);
+});
+test("status-only picker updates match only selections without a duration", () => {
+    assert.equal(matchesManualSelectionExpiry(0, false, undefined), true);
+    assert.equal(matchesManualSelectionExpiry(3_600_000, false, undefined), false);
+    assert.equal(matchesManualSelectionExpiry(3_600_000, true, 3_600_500), true);
 });
 test("ordinary full snapshots, aggregate presence and session events do not prove a manual selection", () => {
     assert.equal(isConfiguredIntervention(evidence({ local: false, partial: false, wasSaved: false })), false);

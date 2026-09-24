@@ -36,6 +36,11 @@ export function matchesManualExpiry(expected: number, actual: unknown) {
     return Number.isFinite(parsed) && Math.abs(parsed - expected) <= 2_000;
 }
 
+/** A picker choice without a duration is represented by a status-only update. */
+export function matchesManualSelectionExpiry(expected: number, hasExpiry: boolean, actual: unknown) {
+    return hasExpiry ? matchesManualExpiry(expected, actual) : expected === 0;
+}
+
 /** Detect an observable configured-setting mutation without inferring from presence events. */
 export function isConfiguredIntervention(e: ConfiguredUpdateEvidence) {
     if (!e.hasConfiguredStatus || !e.changed || e.pluginLocalUpdate || e.correlatedPluginSave || e.matchedManualSelection) return false;

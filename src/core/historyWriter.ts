@@ -31,9 +31,12 @@ export class HistoryWriter {
     }
     private async drain() {
         while (!this.paused && this.pending.length) {
-            const event = this.pending[0];
-            await this.append(event);
-            this.pending = this.pending.filter(candidate => candidate !== event);
+            const event = this.pending.shift()!;
+            try { await this.append(event); }
+            catch (error) {
+                this.pending = retain([event, ...this.pending], this.now());
+                throw error;
+            }
         }
     }
     clear(operation: () => Promise<unknown>): Promise<void> {

@@ -62,8 +62,8 @@ export class Provenance {
         const fields = statusFields(proto);
         const queue = this.updaterTokens.get(updater) ?? [];
         if (!fields) return undefined;
-        const matches = queue.filter(entry => this.activeTokens.has(entry.token) && !this.supersededTokens.has(entry.token)
-            && entry.token.target === fields.configured && (!entry.expected || matchesStatus(entry.expected, fields)));
+        const matches = queue.filter(entry => entry.expected !== null && this.activeTokens.has(entry.token) && !this.supersededTokens.has(entry.token)
+            && entry.token.target === fields.configured && matchesStatus(entry.expected, fields));
         if (matches.length !== 1) return undefined;
         return { token: matches[0].token, expected: fields };
     }

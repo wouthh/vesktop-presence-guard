@@ -246,7 +246,10 @@ async function observe() {
         } else {
             // ScreenSaver.GetActive is screen-shield activity, not proof of locking.
             // GNOME writes actual lock state to login1 Session.LockedHint.
-            const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: currentActivity?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: sessionLock!.locked, shieldActive: shield[0], suspended: currentActivity?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
+            const inputAge = currentActivity?.inputOnly === true && typeof currentActivity.activityAt === "number" && Number.isFinite(currentActivity.activityAt)
+                ? Math.max(0, Date.now() - currentActivity.activityAt)
+                : null;
+            const observation = { at: Date.now(), power: power[0].deepUnpack(), idleMs: inputAge ?? currentActivity?.idleMs ?? -1, thresholdMs: settings.get_uint("idle-delay") * 1000, locked: sessionLock!.locked, shieldActive: shield[0], suspended: currentActivity?.suspended ?? true, topology: JSON.stringify(shape), monitors: logical.length, provider: `${owner[0]}:${instance}:${provider}` };
             if (lastLease && identity()) write({ at: Date.now(), observation, activity: currentActivity });
         }
     } catch {

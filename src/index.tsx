@@ -14,7 +14,7 @@ import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, Us
 import { BUILD_INFO } from "./buildInfo";
 import { ActivityDetector, type ActivityObservation } from "./core/activity";
 import { cameraSnapshot, PipeWireDetector } from "./core/camera";
-import { isConfiguredIntervention, isManualSelectionUpdate, matchesManualExpiry } from "./core/configured-update";
+import { isConfiguredIntervention, isManualSelectionUpdate, matchesManualSelectionExpiry } from "./core/configured-update";
 import { DisplayDetector } from "./core/display";
 import { describeDisplayFacts } from "./core/displayFacts";
 import { PresenceEngine } from "./core/engine";
@@ -131,7 +131,9 @@ function validateHooks() {
         connectionStates = findByProps("SESSION_ESTABLISHED", "RESUMING");
         delay = findByProps("INFREQUENT_USER_ACTION", "AUTOMATED")?.INFREQUENT_USER_ACTION;
         const conflict = ["CustomIdle", "AutoDNDWhilePlaying"].some(name => Vencord.Settings.plugins[name]?.enabled);
-        const signatureReady = currentConfiguredSignature() !== null;
+        const currentSignature = currentConfiguredSignature();
+        if (configuredSignature === null && currentSignature !== null) configuredSignature = currentSignature;
+        const signatureReady = currentSignature !== null;
         statusHooks = connectionStates?.SESSION_ESTABLISHED !== undefined && manualHook && typeof action === "function" && action.toString().includes(".statusAction(") && typeof updater?.updateAsync === "function" && updater.updateAsync.toString().includes(".generatedUpdate(") && Number.isFinite(delay) && UserSettingsProtoStore.hasLoaded(1) && signatureReady && !conflict;
         patchError = conflict ? "conflicting_status_plugin_enabled" : !signatureReady ? configuredSignatureHealth : !statusHooks ? "required_status_hooks_unavailable" : settings.store.idle && !nativeIdleHook ? "native_idle_hook_not_ready" : "none";
     } catch { statusHooks = false; patchError = "required_status_hooks_unavailable"; }
@@ -169,7 +171,7 @@ function statusUpdate(event: any) {
     const matchesManual = isManualSelectionUpdate({
         expected: expected !== null && expected.until >= Date.now(), changed, local: event.local, partial: event.partial,
         targetMatches: expected !== null && hasStatus && parsed.configured === expected.target && status(Configured.getSetting()) === expected.target,
-        expiryMatches: expected !== null && parsed.hasExpiresAtMs && matchesManualExpiry(expected.expiresAt, parsed.expiresAtMs)
+        expiryMatches: expected !== null && matchesManualSelectionExpiry(expected.expiresAt, parsed.hasExpiresAtMs, parsed.expiresAtMs)
     });
     if (matchesManual) expectedManualStatus = null;
     // Full user-settings snapshots and presence/session events are not manual

@@ -75,6 +75,7 @@ test("production helper re-reads sleep state after a resume signal missed withou
     const raceSnapshots = snapshots.slice(beforeActivityRace);
     assert.equal(raceSnapshots[0]?.activity?.inputOnly, true); // The fresh input survives while its old counter is withheld.
     assert.equal(raceSnapshots[0]?.activity?.idleMs, null);
+    assert((raceSnapshots[0]?.observation?.idleMs ?? -1) >= 0 && (raceSnapshots[0]?.observation?.idleMs ?? 5000) < 5000); // Use the confirmed input timestamp without reusing the stale counter.
     assert.equal(raceSnapshots.at(-1)?.activity?.activitySerial, 2);
     assert(raceSnapshots.every((entry, index) => index === 0 || entry.sequence > raceSnapshots[index - 1].sequence));
     tick(); await flush(); assert.equal(snapshot.activity.idleMs, 0); // The bounded periodic sample refreshes the counter after the input pulse.

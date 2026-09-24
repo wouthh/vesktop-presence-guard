@@ -83,6 +83,13 @@ test("save provenance refuses ambiguous same-status queued operations", () => {
     p.register(secondCallback, second); p.generated(secondCallback, secondProto); p.saveQueued(updater, secondProto);
     assert.equal(p.saveStarted(updater, { status: { value: "idle" } }), undefined);
 });
+test("an unsupported queued status shape cannot act as a wildcard save token", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 4, target: "idle" as const, rule: "idle" as const };
+    const unsupported = { status: { unexpected: "idle" } };
+    p.register(callback, token); p.generated(callback, unsupported); p.saveQueued(updater, unsupported);
+    assert.equal(p.saveStarted(updater, { status: { value: "idle" } }), undefined);
+});
 test("save provenance disambiguates queued same-status writes by configured duration", () => {
     const p = new Provenance(), updater = {};
     const first = { generation: 1, target: "idle" as const, rule: "idle" as const };

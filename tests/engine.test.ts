@@ -82,7 +82,15 @@ test("baseline records ambiguous power-save facts and native Idle separately wit
     const idle = f.history.find(e => e.reason === "configured_online_observed_native_idle");
     assert.equal(idle?.configured, "online"); assert.equal(idle?.display.facts?.power, 3);
     assert.equal(idle?.kind, "observation"); assert.equal(idle?.owned, false);
+    assert.equal(f.history.find(e => e.reason === "status_observed")?.importance, "control");
     assert.deepEqual(f.writes, []); assert(!f.history.some(e => e.kind === "request" || e.kind === "confirmation"));
+});
+test("activity uncertainty reason changes remain distinct detector history", () => {
+    const f = fixture();
+    f.s.activity = { ...f.s.activity, value: "unknown", reason: "activity_provider_unavailable", at: f.now() }; f.engine.sample();
+    f.s.activity = { ...f.s.activity, value: "unknown", reason: "idle_counter_reset_without_activity_event", at: f.now() }; f.engine.sample();
+    const observations = retain(f.history, f.now()).filter(event => event.kind === "observation" && event.importance === "detector" && event.activity?.value === "unknown");
+    assert.deepEqual(observations.map(event => event.activity?.reason), ["activity_provider_unavailable", "idle_counter_reset_without_activity_event"]);
 });
 for (const value of ["idle", "dnd", "invisible", "offline", "unknown"] as Status[]) test(`non-owned ${value} remains untouched`, async () => {
     const f = fixture(); f.s.configured = f.s.effective = value; f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);
@@ -269,6 +277,15 @@ test("a confirmed local write with a failed save stays visible and pauses return
     assert(f.history.some(event => event.kind === "save" && event.saveState === "failed"));
     f.engine.resume(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
 });
+test("an unusable terminal save acknowledgement pauses an owned Idle rule", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    const token = f.tokens[0];
+    f.engine.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched");
+    assert.deepEqual(f.engine.pausedRules, ["idle"]);
+    f.signal("active"); await f.advance();
+    assert.deepEqual(f.writes, ["idle"]);
+    assert(f.history.some(event => event.saveState === "unavailable" && event.reason === "configured_status_save_acknowledgement_unmatched"));
+});
 test("a rate-limited save remains pending without pausing an owned Idle return", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance();
     f.engine.saveOutcome(f.tokens[0], "pending", "synthetic_rate_limited_retry");
@@ -334,7 +351,7 @@ test("history loading preserves distinct same-millisecond observations", () => {
     const merged = mergeHistory([event, changed], [event, changed], event.at);
     assert.equal(merged.length, 2);
     assert.deepEqual(merged.map(row => row.status).sort(), ["idle", "online"]);
-    assert(merged.every(row => row.repeatCount === 1));
+    assert(merged.every(row => row.importance === "control"));
 });
 
 test("external intervention pauses both owner and in-flight transition rules", async () => {
@@ -379,10 +396,8 @@ test("failed clear reloads retained startup history and preserves events receive
     const startup = loadHistoryView(view, () => new Promise(r => { release = r; }), () => generation === 0, () => recent.at);
     generation++;
     await assert.rejects(clearHistoryView(view, async () => { release([old]); await startup; throw Error("read_only_storage"); }, () => loadHistoryView(view, async () => [old], () => generation === 1, () => recent.at)), /read_only_storage/);
-    assert.equal(events.length, 1);
-    assert.equal(events[0].repeatCount, 2);
-    assert.equal(events[0].firstAt, old.at);
-    assert.equal(events[0].lastAt, recent.at);
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map(event => event.at), [old.at, recent.at]);
 });
 
 for (const choice of ["idle", "dnd", "invisible", "unknown"] as const) test(`pending manual ${choice} blocks acquisition from the old Online preference`, async () => {
