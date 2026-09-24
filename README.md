@@ -88,7 +88,10 @@ prove ownership.
 Disabling an owning rule, stopping the plugin, switching accounts or reconnecting
 cancels pending work, revokes ownership and leaves configured status unchanged.
 Startup/reconnect establishes fresh detector continuity and never adopts an
-existing configured Idle. Missing or stale activity evidence holds automation;
+existing configured Idle. A reconnect, suspend/resume gap, provider restart or
+counter reset starts a full five-minute inactivity requalification before Idle
+can be requested; a fresh one-shot input remains immediately recognizable.
+Missing or stale activity evidence holds automation;
 an existing process-local owner may remain while configuration is still valid,
 but return requires fresh desktop input. Ownership never survives a restart.
 Stopping restores native Idle behavior. Re-enabling the plugin in the same renderer leaves webcam automation

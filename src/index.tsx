@@ -331,8 +331,8 @@ export default definePlugin({
             queueMicrotask(() => engine?.sample("native/client"));
         });
         for (const event of ["AFK", "SESSIONS_REPLACE"]) subscribe(event, () => queueMicrotask(() => engine?.sample("unknown")));
-        for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); engine?.boundary(event.toLowerCase()); provenance.clear(); });
-        for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); provenance.clear(); saveState = "unavailable"; engine?.boundary("connection_open_new_epoch"); nativeIdleReconcile?.(); queueMicrotask(() => engine?.sample()); });
+        for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(true); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); engine?.boundary(event.toLowerCase()); provenance.clear(); });
+        for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(true); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); provenance.clear(); saveState = "unavailable"; engine?.boundary("connection_open_new_epoch"); nativeIdleReconcile?.(); queueMicrotask(() => engine?.sample()); });
         const epoch = lifecycle;
         void loadHistory().then(notify, notify);
         void Native.consumeWelcome().then(show => { if (show && epoch === lifecycle) openPanel(); });

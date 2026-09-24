@@ -136,6 +136,22 @@ test("an unavailable activity interval keeps a recovery boundary before inactivi
     for (let at = 112000; at <= 402000; at += 10000) result = d.observe(activitySample({ ...replacement, at, idleMs: replacement.idleMs + at - replacement.at })).value;
     assert.equal(result, "inactive");
 });
+test("reconnect reset preserves a five-minute recovery boundary for an already-high idle counter", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 90_000 })); d.reset(true);
+    const resumed = activitySample({ at: 100_000, idleMs: IDLE_THRESHOLD_MS + 100_000, provider: "post-resume-epoch" });
+    assert.equal(d.observe(resumed).reason, "activity_recovery_boundary");
+    assert.equal(d.observe(activitySample({ ...resumed, at: 102_000, idleMs: resumed.idleMs + 2_000 })).reason, "activity_boundary_requalifying");
+    let value: string = "unknown";
+    for (let at = 112_000; at < resumed.at + IDLE_THRESHOLD_MS; at += 10_000) {
+        value = d.observe(activitySample({ ...resumed, at, idleMs: resumed.idleMs + at - resumed.at })).value;
+    }
+    assert.equal(value, "unknown");
+    assert.equal(d.observe(activitySample({ ...resumed, at: resumed.at + IDLE_THRESHOLD_MS, idleMs: resumed.idleMs + IDLE_THRESHOLD_MS })).value, "inactive");
+});
+test("a fresh Mutter input pulse still bypasses reconnect inactivity requalification", () => {
+    const d = new ActivityDetector(); d.observe(activitySample()); d.reset(true);
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 100, provider: "post-resume-epoch", activitySerial: 1, activityAt: 2900 })).value, "active");
+});
 test("one genuine input pulse is still recognized when activity returns after an unavailable interval", () => {
     const d = new ActivityDetector(); d.observe(activitySample()); d.observe(null, 2000);
     assert.equal(d.observe(activitySample({ at: 3000, idleMs: 100, activitySerial: 1, activityAt: 2900, provider: "replacement" })).value, "active");

@@ -41,9 +41,12 @@ are separate evidence.
 9. Restart or reconnect, disable the plugin, or make detector data unavailable.
    Ownership and pending writes must be discarded at restart/reconnect/disable;
    an already owned status may remain local while activity is Unknown, but no
-   return may be inferred from stale data. Existing configured Idle is never
-   adopted. If the native Idle hook is unsupported, Idle automation must remain
-   unavailable and the panel must report that state.
+   return may be inferred from stale data. After suspend/resume, reconnect,
+   provider replacement or a counter reset, a high counter must requalify through
+   five fresh continuous minutes before Idle; one genuine input remains immediate.
+   Existing configured Idle is never adopted. If the native Idle hook is
+   unsupported, Idle automation must remain unavailable and the panel must report
+   that state.
 10. Use clear/export and the labelled fixture simulation. Export remains local;
     simulation must not create real status writes or ownership.
 

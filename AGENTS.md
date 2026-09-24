@@ -28,6 +28,9 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Provider/session changes, counter resets, suspend/resume gaps and stale input
   evidence never fabricate activity. Aggregate/session presence updates are not
   proof of a manual configured-status selection.
+- Renderer reconnects preserve an activity recovery boundary. A high post-resume
+  counter requires fresh five-minute continuity before Idle; a fresh one-shot
+  input remains immediately recognizable.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.

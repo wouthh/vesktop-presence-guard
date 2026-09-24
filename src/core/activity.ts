@@ -27,7 +27,12 @@ export class ActivityDetector {
     private requalifyAt: number | null = null;
     private unavailable = false;
 
-    reset() { this.previous = null; this.provedSerial = null; this.requalifyAt = null; this.unavailable = false; }
+    reset(requireRequalification = false) {
+        this.previous = null;
+        this.provedSerial = null;
+        this.requalifyAt = null;
+        this.unavailable = requireRequalification;
+    }
 
     observe(o: ActivityObservation | null, now = o?.at ?? Date.now()): Signal {
         const scope = "GNOME system-wide user activity";
