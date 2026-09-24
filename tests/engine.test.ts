@@ -101,9 +101,9 @@ test("display and camera uncertainty cause changes remain distinct decisions and
     const skips = f.history.filter(event => event.kind === "skip");
     assert.equal(skips.length, 4);
     assert.deepEqual(skips.map(event => [event.display.reason, event.camera.reason, event.importance]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [
-        ["display_poll_failed", "clear", "control"],
+        ["display_poll_failed", "clear", "detector"],
         ["display_provider_restarted", "clear", "detector"],
-        ["display_provider_restarted", "camera_probe_unavailable", "control"],
+        ["display_provider_restarted", "camera_probe_unavailable", "detector"],
         ["display_provider_restarted", "camera_hook_unsupported", "detector"]
     ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
     const retained = retain(f.history, f.now());

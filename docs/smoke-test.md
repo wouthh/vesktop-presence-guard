@@ -52,11 +52,22 @@ are separate evidence.
 10. Use clear/export and the labelled fixture simulation. Export remains local;
     simulation must not create real status writes or ownership.
 
+11. In synthetic integration, expose the favourites updater before the main
+    settings updater even though both have `updateAsync` and `markDirty`. Confirm
+    discovery selects raw type-1 `PreloadedUserSettings`, validates its status
+    descriptor and patched save lifecycle, and preserves the same receiver
+    through asynchronous load, local application and save acknowledgement. The
+    favourites updater must not load, mutate, affect ownership or confirm a save.
+    Verify missing/wrong updater metadata and unknown schema show a fail-closed
+    readiness reason, and inspect the allowlisted last-write diagnostic without
+    any settings payload or exception text.
+
 Synthetic acceptance also checks both the status-group draft and nested root
 settings envelope, status-only updates, optional timestamp wrappers, exact save
 echo provenance, unrelated snapshots, cancelled writes during settings loading,
-and protected status history under overnight-scale detector churn. These checks
-do not establish remote save or mobile behavior.
+and protected status history under overnight-scale detector churn passing through
+the engine and history writer, including migration of repetitive legacy skips.
+These checks do not establish remote save or mobile behavior.
 
 The desktop inactivity timer does not use phone activity. Human observations
 must record synthetic output, local configured/effective state, correlated save

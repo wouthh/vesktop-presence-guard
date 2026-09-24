@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HistoryWriter } from "../src/core/historyWriter";
 import { MAX_EVENTS, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
-import { UNKNOWN, type HistoryEvent } from "../src/core/types";
+import { PresenceEngine } from "../src/core/engine";
+import { UNKNOWN, type Clock, type HistoryEvent, type Snapshot } from "../src/core/types";
 const event = (reason: string, at = 100000): HistoryEvent => ({ at, reason, kind: "observation", source: "unknown", previous: "online", status: "idle", configured: "online", aggregate: "unknown", owned: false, display: UNKNOWN("synthetic"), camera: UNKNOWN("synthetic") });
 test("transient append failure retains the oldest event and retries before later events", async () => {
     const attempts: string[] = [], saved: string[] = [];
@@ -68,6 +69,63 @@ test("legacy configured-status observations retain the protected control partiti
     assert.equal(retained.filter(row => row.reason === "configured_online_observed_native_idle").length, 60);
     assert.equal(retained.filter(row => row.reason.startsWith("legacy_detector_")).length, 100);
     assert(retained.filter(row => row.reason === "status_observed" || row.reason === "configured_online_observed_native_idle").every(row => row.importance === "control"));
+});
+
+test("legacy repetitive automation decisions migrate out of the protected control partition", () => {
+    const now = 2_000_000;
+    const incident = [
+        { ...event("desktop_inactive_for_300_seconds", now - 100), kind: "request" as const, importance: "control" as const },
+        { ...event("write_failed_rule_paused", now - 99), kind: "error" as const, importance: "control" as const }
+    ];
+    const legacyNoise = Array.from({ length: 600 }, (_, i) => ({ ...event("automation_paused", now - 600 + i), kind: "skip" as const, importance: "control" as const }));
+    const retained = retain([...incident, ...legacyNoise], now);
+    assert(incident.every(row => retained.some(saved => saved.reason === row.reason)));
+    assert.equal(retained.filter(row => row.reason === "automation_paused").length, 1);
+    assert.equal(retained.find(row => row.reason === "automation_paused")?.repeatCount, 600);
+    assert(retained.filter(row => row.reason === "automation_paused").every(row => row.importance === "detector"));
+});
+
+test("unknown untagged legacy skips keep control priority while current skips use their explicit class", () => {
+    const now = 2_000_000;
+    const legacyControl = { ...event("status_conflict_rule_paused", now), kind: "skip" as const };
+    const currentDetector = { ...event("no_change_needed", now + 1), kind: "skip" as const, importance: "detector" as const };
+    const retained = retain([legacyControl, currentDetector], now + 1);
+    assert.equal(retained.find(row => row.reason === legacyControl.reason)?.importance, "control");
+    assert.equal(retained.find(row => row.reason === currentDetector.reason)?.importance, "detector");
+});
+
+test("eight hours of engine decisions through HistoryWriter preserve the original write incident", async () => {
+    let now = 10_000_000;
+    const persisted: HistoryEvent[] = [];
+    const writer = new HistoryWriter(async row => { persisted.splice(0, persisted.length, ...mergeHistory(persisted, [row], now)); }, () => now);
+    const request = { ...event("desktop_inactive_for_300_seconds", now), kind: "request" as const, importance: "control" as const };
+    const failure = { ...event("write_failed_rule_paused_status_updater_schema_rejected", now), kind: "error" as const, importance: "control" as const };
+    writer.enqueue(request); writer.enqueue(failure); await writer.flush();
+
+    const snapshot: Snapshot = {
+        account: "synthetic", connected: true, capable: true, nativeIdleHookReady: true,
+        configured: "online", effective: "online", aggregate: "online", nativeIdle: false, nativeIdleAttributed: false,
+        activity: { value: "unknown", at: now, reason: "activity_provider_unavailable", scope: "synthetic desktop" },
+        display: { value: "unknown", at: now, reason: "display_polling", scope: "synthetic display" },
+        camera: UNKNOWN("synthetic camera")
+    };
+    const clock: Clock = { now: () => now, set: callback => callback, clear: () => {} };
+    const engine = new PresenceEngine({ read: () => snapshot, write: async () => { throw Error("unexpected_status_write"); }, record: row => writer.enqueue(row) }, clock, { observe: true, idle: true, camera: false });
+    engine.sample(); await writer.flush();
+
+    for (let i = 0; i < 14_400; i++) {
+        now += 2_000;
+        snapshot.display = { ...snapshot.display, at: now, reason: `display_probe_${i}` };
+        engine.sample();
+        if (i % 50 === 49) await writer.flush();
+    }
+    await writer.flush();
+
+    assert(persisted.some(row => row.reason === request.reason && row.kind === "request"));
+    assert(persisted.some(row => row.reason === failure.reason && row.kind === "error"));
+    assert(persisted.filter(row => row.importance === "control").length <= 400);
+    assert(persisted.filter(row => row.importance === "detector").length <= 100);
+    assert(persisted.some(row => row.kind === "skip" && row.importance === "detector"));
 });
 
 test("detector cap keeps a frequently repeated cause by its latest occurrence", () => {

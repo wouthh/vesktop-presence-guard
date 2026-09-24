@@ -15,6 +15,7 @@ import { displayFacts } from "./core/displayFacts";
 import { mergeHistory, retain } from "./core/history";
 import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
 import { pipeWireGraph } from "./core/pipeWireSnapshot";
+import { sanitizeLastWrite, type UpdaterReadiness } from "./core/statusUpdater";
 import { HistoryEvent, status } from "./core/types";
 
 const directory = join(DATA_DIR, "PresenceGuard");
@@ -112,6 +113,11 @@ export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {
     for (const key of ["activityIdleMs", "activitySampleAgeMs", "helperSnapshotSequence", "helperSnapshotAgeMs", "idleRemainingMs"]) {
         result[key] = typeof v[key] === "number" && Number.isFinite(v[key]) ? Math.max(0, Math.min(Number.MAX_SAFE_INTEGER, v[key])) : null;
     }
+    const readiness: UpdaterReadiness[] = ["ready", "not_found", "metadata_mismatch", "schema_mismatch", "patches_unavailable"];
+    if (readiness.includes(v.updaterReadiness as UpdaterReadiness)) result.updaterReadiness = v.updaterReadiness;
+    result.updaterType = Number.isInteger(v.updaterType) && Number(v.updaterType) >= 0 && Number(v.updaterType) <= 255 ? v.updaterType : null;
+    const lastWrite = sanitizeLastWrite(v.lastWrite);
+    if (lastWrite) result.lastWrite = lastWrite;
     if (Array.isArray(v.pausedRules)) {
         result.pausedRules = v.pausedRules.slice(0, 2).flatMap((entry: any) => entry && ["idle", "camera"].includes(entry.rule) && typeof entry.reason === "string" && Number.isFinite(entry.at)
             ? [{ rule: entry.rule, reason: entry.reason.slice(0, 120), at: entry.at }]

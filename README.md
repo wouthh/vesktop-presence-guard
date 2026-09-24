@@ -2,7 +2,8 @@
 
 A small unofficial Vencord userplugin for **local own-status history**, optional
 configured Idle after five minutes of desktop-wide inactivity, and optional webcam DND.
-No backend, telemetry, other-user tracking, or media acquisition.
+No backend, telemetry, other-user tracking, or media acquisition. This release is
+**0.2.2**.
 
 Installation enables PresenceGuard and local history in the selected main
 profile. **Automatic Idle and Webcam DND start off on first installation.** A
@@ -44,9 +45,13 @@ update; it does not prove a successful server save.
 The panel reports local storage failures separately from status-hook health. It
 also exposes helper sequence and freshness, the GNOME idle counter, remaining
 qualification time, the last continuity reset, configured-signature support,
-native Idle attribution, pending write stage and each paused rule's cause/time.
-Failures remain visible until the corresponding operation succeeds. Diagnostic
-write failures do not invalidate otherwise healthy detector observations. Native
+native Idle attribution, updater type/readiness, pending write stage and each
+paused rule's cause/time. Its last-write record keeps a bounded operation number,
+target, phase, timestamps, outcome and classified error code across routine
+polls; it never stores exception text or settings contents. Ordinary decision
+skips use the detector reservation, while write and control events remain in the
+protected reservation. Diagnostic write failures do not invalidate otherwise
+healthy detector observations. Native
 JSON reads reject non-regular files without waiting on a FIFO.
 
 Transient history-write failures retain recent pending events in memory and retry
@@ -90,10 +95,16 @@ exact queued updater operation. Ambiguous, unparseable, or mismatched save
 evidence is marked unavailable and pauses its candidate rule rather than being
 treated as success. Polling does not retry a failed write loop. The status
 adapter accepts the verified status-group and root settings envelopes,
-including status-only updates and wrapped timestamps. Duration metadata may be
-beside the status in either supported envelope; conflicting or unknown required
-shapes make automation unavailable with a visible reason. A status-only manual
-picker update is accepted only when the selected status has no duration.
+including status-only updates and wrapped timestamps. It resolves the raw type-1
+`PreloadedUserSettings` updater by protobuf identity and supported status field
+schema, then checks required update/save patch fingerprints. Favourites settings
+expose the same generic methods but are never eligible. The raw updater receiver
+remains pinned through asynchronous load, mutation and save correlation. A missing
+schema or hook blocks writes with a visible updater-readiness reason. Duration
+metadata may be beside the status in either supported envelope; conflicting or
+unknown required shapes make automation unavailable with a visible reason. A
+status-only manual picker update is accepted only when the selected status has
+no duration.
 
 The local panel/history distinguishes configured status, effective presence,
 native Idle, ownership, local update confirmation and the updater's save

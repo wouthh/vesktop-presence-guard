@@ -18,14 +18,15 @@ test("picker patches invoke manual hook for same value and duration, preserving 
 });
 test("async updater patch carries exact callback/proto identity across load", async () => {
     const provenance = new Provenance();
-    const callback = () => {}, token = { generation: 1, target: "idle" as const, rule: "idle" as const }; provenance.register(callback, token);
+    const callback = () => {}, token = { generation: 1, target: "idle" as const, rule: "idle" as const };
     const partial = { status: { value: "idle" } };
     let observed: unknown;
-    const self = { generatedUpdate: (cb: object, proto: object) => provenance.generated(cb, proto) };
+    const self = { generatedUpdate: (owner: object, cb: object, proto: object) => provenance.generated(owner, cb, proto) };
     const code = 'return new class{loadIfNecessary(){return Promise.resolve()}build(){return partial}markDirty(s){observed(s)}async updateAsync(e,t,n,i){await this.loadIfNecessary();let s=this.build(e,t);null!=s&&(__OVERLAY__?null:this.markDirty(s))}}';
     const patched = code.replace(protoPatch.replacement.match, protoPatch.replacement.replace);
     assert.notEqual(patched, code);
     const updater = new Function("$self", "partial", "observed", "__OVERLAY__", patched)(self, partial, (proto: object) => { observed = provenance.take(proto); }, false);
+    provenance.register(callback, token, updater);
     await updater.updateAsync("status", callback, 1); assert.equal(observed, token);
 });
 

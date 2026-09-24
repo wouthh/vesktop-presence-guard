@@ -17,7 +17,7 @@ export const protoPatch = {
     find: "async updateAsync(",
     replacement: {
         match: /(async updateAsync\((\w+),(\w+),(\w+),(\w+)\)\{[\s\S]*?)(null!=([\w]+)&&\(__OVERLAY__\?)/,
-        replace: "$1$self.generatedUpdate($3,$7);$6"
+        replace: "$1$self.generatedUpdate(this,$3,$7);$6"
     }
 };
 export const saveLifecyclePatch = {
