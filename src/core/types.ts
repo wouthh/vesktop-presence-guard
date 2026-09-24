@@ -28,15 +28,19 @@ export interface Snapshot {
     account: string | null; // Process-local only; never copied into history.
     connected: boolean;
     capable: boolean;
+    nativeIdleHookReady: boolean;
     configured: Status;
     effective: Status;
     aggregate: Status;
     nativeIdle: boolean | null;
+    nativeIdleAttributed: boolean;
+    activity: Signal;
     display: Signal; // active = confirmed active session, inactive = qualifying blanking
     camera: Signal; // active = confirmed capture, inactive = cleared within stated scope
 }
 export interface Options { observe: boolean; idle: boolean; camera: boolean; }
-export type EventKind = "observation" | "request" | "confirmation" | "skip" | "simulation" | "error" | "boundary";
+export type EventKind = "observation" | "request" | "confirmation" | "skip" | "simulation" | "error" | "boundary" | "save";
+export type SaveState = "pending" | "succeeded" | "failed" | "unavailable";
 export type Source = "manual" | "plugin" | "native/client" | "external" | "unknown";
 export interface HistoryEvent {
     at: number;
@@ -48,6 +52,9 @@ export interface HistoryEvent {
     aggregate: Status;
     reason: string;
     owned: boolean;
+    nativeIdleAttributed?: boolean;
+    activity?: Signal;
+    saveState?: SaveState;
     display: Signal;
     camera: Signal;
 }

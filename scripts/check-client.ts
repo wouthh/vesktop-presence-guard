@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { readFileSync } from "node:fs";
 import ts from "typescript";
-import { actionPatch, cameraPatch, protoPatch, selectionPatch } from "../src/patches";
+import { actionPatch, cameraPatch, nativeIdlePatch, protoPatch, saveLifecyclePatch, selectionPatch } from "../src/patches";
 const source = readFileSync(process.argv[2], "utf8");
 if (source.length > 40 * 1024 * 1024) throw Error("client_source_too_large");
 const ast = ts.createSourceFile("client.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -11,7 +11,7 @@ function visit(node: ts.Node) {
     else ts.forEachChild(node, visit);
 }
 visit(ast);
-for (const [name, patch] of Object.entries({ actionPatch, protoPatch, selectionPatch, cameraPatch })) {
+for (const [name, patch] of Object.entries({ actionPatch, protoPatch, saveLifecyclePatch, selectionPatch, cameraPatch, nativeIdlePatch })) {
     const matches = modules.filter(code => typeof patch.find === "string" ? code.includes(patch.find) : patch.find.test(code));
     if (matches.length !== 1) throw Error(`${name}: expected one module, got ${matches.length}`);
     let code = matches[0];

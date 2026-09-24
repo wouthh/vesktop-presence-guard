@@ -13,11 +13,27 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 
 ## Protected state and invariants
 
-- Never acquire status ownership except from positively confirmed Online.
+- Idle ownership may be acquired only from configured Online plus either local
+  effective Online or effective Idle positively attributed to the verified
+  native automatic-Idle path. Native Idle alone never grants ownership and
+  does not block the explicit configured Idle write after 300 seconds.
 - Manual selections, including the same value and duration edits, revoke
   ownership before asynchronous work. Unknown never means cleared.
-- Keep raw display facts distinct from inferred eligibility and status changes.
-- Ownership is process-local. Do not restore it from history or adopt native idle.
+- Keep GNOME system-wide input evidence, raw display facts, native Idle
+  attribution, configured-status writes and local effective presence distinct.
+  Display blanking, locking and Vesktop focus never control the five-minute timer.
+- Ownership begins only after the exact plugin updater operation locally applies
+  configured Idle. Ownership is process-local; never restore it from history or
+  adopt native Idle. Revoke it on an observable configured-status intervention.
+- Provider/session changes, counter resets, suspend/resume gaps and stale input
+  evidence never fabricate activity. Aggregate/session presence updates are not
+  proof of a manual configured-status selection.
+- Renderer reconnects preserve an activity recovery boundary. A high post-resume
+  counter requires fresh five-minute continuity before Idle; a fresh one-shot
+  input remains immediately recognizable.
+- Native Idle integration may suppress or clear only the local IDLE event while
+  fresh desktop activity is proven. It must not change shared activity times,
+  AFK or notification behavior. The desktop timer never uses phone activity.
 - Observe only the signed-in account and local display/camera state. No media
   acquisition, telemetry, network control listener, or other-user tracking.
 - Preserve existing plugins, profiles, launch routes, settings, and unexplained
