@@ -41,7 +41,7 @@ test("save provenance follows the exact updater, queued token, and returned conf
     const context = p.saveStarted(updater, sent)!;
     const unrelated = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
     assert.equal(p.takeSaveAck(unrelated), false);
-    assert.equal(p.saveSucceeded(updater, context, unrelated), true);
+    assert.deepEqual(p.saveSucceeded(updater, context, unrelated), { state: "succeeded", tokens: [token] });
     assert.equal(p.takeSaveAck(unrelated), true);
     assert.equal(p.takeSaveAck(unrelated), false);
 });
@@ -51,8 +51,71 @@ test("save acknowledgement rejects a changed duration or a nonmatching configure
     const local = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
     p.register(callback, token); p.generated(callback, local); p.saveQueued(updater, local);
     const context = p.saveStarted(updater, local)!;
-    assert.equal(p.saveSucceeded(updater, context, { status: { value: "idle" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 500 }), false);
-    assert.equal(p.saveSucceeded(updater, context, { status: { value: "online" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 }), false);
+    assert.deepEqual(p.saveSucceeded(updater, context, { status: { value: "idle" }, statusExpiresAtMs: 2000, statusCreatedAtMs: 500 }), { state: "unavailable", tokens: [token] });
+    assert.deepEqual(p.saveSucceeded(updater, context, { status: { value: "online" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 }), { state: "ignored", tokens: [] });
+});
+test("a decoded-null save acknowledgement is an unavailable terminal outcome for its candidate", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 2, target: "idle" as const, rule: "idle" as const };
+    const local = { status: { value: "idle" } };
+    p.register(callback, token); p.generated(callback, local); p.saveQueued(updater, local);
+    const context = p.saveStarted(updater, local)!;
+    assert.deepEqual(p.saveSucceeded(updater, context, null), { state: "unavailable", tokens: [token] });
+});
+test("save provenance parses nested root status envelopes and status-only acknowledgements", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 8, target: "idle" as const, rule: "idle" as const };
+    const local = { status: { status: { value: "idle" }, statusExpiresAtMs: { value: "5000" }, statusCreatedAtMs: { value: "1000" } } };
+    p.register(callback, token); p.generated(callback, local); p.saveQueued(updater, local); assert.equal(p.take(local), token);
+    const sent = { status: { status: { value: "idle" }, statusExpiresAtMs: "5000", statusCreatedAtMs: "1000" } };
+    const context = p.saveStarted(updater, sent)!;
+    const ack = { status: { status: { value: "idle" }, statusExpiresAtMs: { value: "5000" }, statusCreatedAtMs: { value: "1000" } } };
+    assert.deepEqual(p.saveSucceeded(updater, context, ack), { state: "succeeded", tokens: [token] });
+    assert.equal(p.takeSaveAck(ack), true);
+
+    const statusOnly = { status: { status: { value: "online" } } };
+    const onlineToken = { generation: 9, target: "online" as const, rule: "idle" as const };
+    const onlineCallback = () => {};
+    p.register(onlineCallback, onlineToken); p.generated(onlineCallback, statusOnly); p.saveQueued(updater, statusOnly);
+    const sentStatusOnly = { status: { status: { value: "online" } } };
+    const statusOnlyContext = p.saveStarted(updater, sentStatusOnly)!;
+    assert.deepEqual(p.saveSucceeded(updater, statusOnlyContext, { status: { status: { value: "online" } } }), { state: "succeeded", tokens: [onlineToken] });
+});
+test("ambiguous same-status requests retain candidate tokens but never count as successful", () => {
+    const p = new Provenance(), updater = {};
+    const first = { generation: 1, target: "idle" as const, rule: "idle" as const };
+    const second = { generation: 2, target: "idle" as const, rule: "idle" as const };
+    const firstCallback = () => {}, secondCallback = () => {};
+    const firstProto = { status: { value: "idle" } }, secondProto = { status: { value: "idle" } };
+    p.register(firstCallback, first); p.generated(firstCallback, firstProto); p.saveQueued(updater, firstProto);
+    p.register(secondCallback, second); p.generated(secondCallback, secondProto); p.saveQueued(updater, secondProto);
+    const context = p.saveStarted(updater, { status: { value: "idle" } })!;
+    assert.deepEqual(context.tokens, [first, second]);
+    assert.equal(context.correlated, false);
+    assert.deepEqual(p.saveSucceeded(updater, context, { status: { value: "idle" } }), { state: "unavailable", tokens: [first, second] });
+});
+test("an unsupported queued status shape retains its token only as fail-closed context", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 4, target: "idle" as const, rule: "idle" as const };
+    const unsupported = { status: { unexpected: "idle" } };
+    p.register(callback, token); p.generated(callback, unsupported); p.saveQueued(updater, unsupported);
+    const context = p.saveStarted(updater, { status: { value: "idle" } })!;
+    assert.deepEqual(context.tokens, [token]);
+    assert.equal(context.correlated, false);
+    assert.deepEqual(p.saveSucceeded(updater, context, { status: { value: "idle" } }), { state: "unavailable", tokens: [token] });
+});
+test("save provenance disambiguates queued same-status writes by configured duration", () => {
+    const p = new Provenance(), updater = {};
+    const first = { generation: 1, target: "idle" as const, rule: "idle" as const };
+    const second = { generation: 2, target: "idle" as const, rule: "idle" as const };
+    const firstCallback = () => {}, secondCallback = () => {};
+    const firstProto = { status: { value: "idle" }, statusExpiresAtMs: "1000", statusCreatedAtMs: "100" };
+    const secondProto = { status: { value: "idle" }, statusExpiresAtMs: "2000", statusCreatedAtMs: "200" };
+    p.register(firstCallback, first); p.generated(firstCallback, firstProto); p.saveQueued(updater, firstProto);
+    p.register(secondCallback, second); p.generated(secondCallback, secondProto); p.saveQueued(updater, secondProto);
+    const context = p.saveStarted(updater, { status: { value: "idle" }, statusExpiresAtMs: "2000", statusCreatedAtMs: "200" })!;
+    assert.deepEqual(context.tokens, [second]);
+    assert.equal(context.correlated, true);
 });
 test("a delayed save acknowledgement is rejected after a newer configured write is locally applied", () => {
     const p = new Provenance(), updater = {}, idleCallback = () => {}, onlineCallback = () => {};
@@ -67,9 +130,9 @@ test("a delayed save acknowledgement is rejected after a newer configured write 
     // markDirty queues before the local USER_SETTINGS_PROTO_UPDATE reaches take().
     p.saveQueued(updater, onlineLocal); assert.equal(p.take(onlineLocal), onlineToken);
     const onlineContext = p.saveStarted(updater, onlineLocal)!;
-    assert.equal(p.saveSucceeded(updater, onlineContext, onlineLocal), true);
+    assert.deepEqual(p.saveSucceeded(updater, onlineContext, onlineLocal), { state: "succeeded", tokens: [onlineToken] });
     const lateIdleEcho = { status: { value: "idle" }, statusExpiresAtMs: 1000, statusCreatedAtMs: 500 };
-    assert.equal(p.saveSucceeded(updater, context, lateIdleEcho), false);
+    assert.deepEqual(p.saveSucceeded(updater, context, lateIdleEcho), { state: "ignored", tokens: [] });
     assert.equal(p.takeSaveAck(lateIdleEcho), false);
 });
 test("rate-limit retry keeps exact save context; terminal failures discard it", () => {
@@ -82,6 +145,36 @@ test("rate-limit retry keeps exact save context; terminal failures discard it", 
     p.saveFailed(updater, first, false);
     assert.equal(p.saveStarted(updater, proto), undefined);
 });
+test("unparseable save requests and acknowledgements preserve candidate context and terminal outcomes", () => {
+    const p = new Provenance(), updater = {}, callback = () => {};
+    const token = { generation: 11, target: "idle" as const, rule: "idle" as const };
+    const queued = { status: { value: "idle" }, statusExpiresAtMs: "1000", statusCreatedAtMs: "100" };
+    p.register(callback, token); p.generated(callback, queued); p.saveQueued(updater, queued);
+
+    const malformedRequest = { status: { unexpected: "idle" }, statusExpiresAtMs: { notValue: "1000" } };
+    const context = p.saveStarted(updater, malformedRequest)!;
+    assert.deepEqual(context.tokens, [token]);
+    assert.equal(context.correlated, false);
+    assert.deepEqual(p.saveSucceeded(updater, context, { status: { unexpected: "idle" } }), { state: "unavailable", tokens: [token] });
+    assert.equal(p.saveStarted(updater, malformedRequest), undefined);
+
+    const failureQueued = { status: { value: "idle" } };
+    const failureToken = { generation: 12, target: "idle" as const, rule: "idle" as const };
+    const failureCallback = () => {};
+    p.register(failureCallback, failureToken); p.generated(failureCallback, failureQueued); p.saveQueued(updater, failureQueued);
+    const unparseable = p.saveStarted(updater, { status: { unexpected: "idle" } })!;
+    assert.deepEqual(p.saveFailed(updater, unparseable, false), [failureToken]);
+    assert.equal(p.saveStarted(updater, { status: { unexpected: "idle" } }), undefined);
+
+    const mismatchQueued = { status: { value: "idle" }, statusExpiresAtMs: "1000", statusCreatedAtMs: "100" };
+    const mismatchToken = { generation: 13, target: "idle" as const, rule: "idle" as const };
+    const mismatchCallback = () => {};
+    p.register(mismatchCallback, mismatchToken); p.generated(mismatchCallback, mismatchQueued); p.saveQueued(updater, mismatchQueued);
+    const mismatched = p.saveStarted(updater, { status: { value: "idle" }, statusExpiresAtMs: "2000", statusCreatedAtMs: "100" })!;
+    assert.deepEqual(mismatched.tokens, [mismatchToken]);
+    assert.equal(mismatched.correlated, false);
+    assert.deepEqual(p.saveFailed(updater, mismatched, false), [mismatchToken]);
+});
 test("revoked manual intervention prevents a late same-value save from being correlated", () => {
     const p = new Provenance(), updater = {}, callback = () => {};
     const token = { generation: 3, target: "idle" as const, rule: "idle" as const };
@@ -90,7 +183,7 @@ test("revoked manual intervention prevents a late same-value save from being cor
     const context = p.saveStarted(updater, proto)!;
     p.clear();
     const late = { status: { value: "idle" } };
-    assert.equal(p.saveSucceeded(updater, context, late), false);
+    assert.deepEqual(p.saveSucceeded(updater, context, late), { state: "ignored", tokens: [] });
     assert.equal(p.takeSaveAck(late), false);
     assert.equal(p.saveStarted(updater, late), undefined);
 });
@@ -102,7 +195,34 @@ test("save lifecycle patch matches updater queue, request, success and failure c
         assert.notEqual(next, code); code = next;
     }
     assert(code.includes('saveFailed(this,presenceGuardSave,e?.status===429?"rate_limited":"terminal")'));
+    assert(code.includes("saveUnavailable(this,presenceGuardSave)"));
     new Function("$self", "m", "a", "c", `return (${code})();`);
+});
+
+test("a null decoded server acknowledgement is reported before the save path returns", async () => {
+    const observed: string[] = [];
+    const self = {
+        saveQueued: () => observed.push("queued"),
+        saveStarted: () => { observed.push("started"); return {}; },
+        saveUnavailable: () => observed.push("unavailable"),
+        saveSucceeded: () => observed.push("succeeded"),
+        saveFailed: () => observed.push("failed")
+    };
+    let code = 'new class{markDirty(e,t){this.value=e}persistChanges=async()=>{let{editInfo:e}=this.getEditInfo();if(null==e.protoToSave)return void this.logger.log("empty");this.beforeSendCallbacks.forEach(t=>t.processProto(e.protoToSave));let t=(0,m.ob)(this.ProtoClass,e.protoToSave);if(null==t||""===t)return void this.logger.log("empty");try{let{body:n}=await a.Bo.patch({body:t});let i=(0,m.ii)(this.ProtoClass,n.settings);if(null==i)return;c.h.dispatch({type:"USER_SETTINGS_PROTO_UPDATE",settings:{proto:i,type:this.type},resetEditInfo:!0,wasSaved:!0,local:!1})}catch(e){throw e}}}';
+    for (const replacement of saveLifecyclePatch.replacement) code = code.replace(replacement.match, replacement.replace);
+    const updater = new Function("$self", "m", "a", "c", `return (${code});`)(
+        self,
+        { ob: () => "encoded", ii: () => null },
+        { Bo: { patch: async () => ({ body: { settings: "synthetic" } }) } },
+        { h: { dispatch: () => observed.push("dispatch") } }
+    );
+    updater.markDirty({ status: { value: "idle" } }, {});
+    updater.getEditInfo = () => ({ editInfo: { protoToSave: { status: { value: "idle" } } } });
+    updater.beforeSendCallbacks = [{ processProto: () => {} }];
+    updater.ProtoClass = {};
+    updater.logger = { log: () => observed.push("logger") };
+    await updater.persistChanges();
+    assert.deepEqual(observed, ["queued", "started", "unavailable"]);
 });
 
 test("native Idle integration changes only the local IDLE branch and keeps its reevaluator Idle-only", () => {

@@ -31,6 +31,40 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Renderer reconnects preserve an activity recovery boundary. A high post-resume
   counter requires fresh five-minute continuity before Idle; a fresh one-shot
   input remains immediately recognizable.
+- A one-shot input that invalidates an in-flight counter read remains positive
+  activity evidence while that counter is refreshed; the stale counter alone is
+  withheld and independent display facts remain usable. Snapshot readers consume
+  activity and display facts from one fresh, sequenced helper generation.
+- Cancellation before local mutation is not a write failure and does not pause
+  automation. Genuine updater, confirmation, and terminal-save failures remain
+  visible and pause the affected rule.
+- Parse only supported configured-status group/root envelopes and wrappers;
+  group-level or root-level duration metadata is accepted when unambiguous, and
+  malformed or competing status locations and unknown required shapes fail
+  closed. Wrapped null expiry remains valid no-duration evidence. A no-duration
+  picker selection may correlate with an explicit null or zero expiry, but
+  never with a nonzero duration; present undefined duration fields are invalid.
+  Save acknowledgements require one exact queued updater operation with
+  compatible parsed status/duration evidence. A successful request with an
+  undecodable/null response is an unavailable terminal outcome for its active
+  candidate, never an unreported success;
+  ambiguous, unparseable, or mismatched evidence never counts as success, while
+  candidate tokens remain attached so terminal outcomes pause affected rules.
+- Retain no more than 500 history events for seven days, reserving 400 for
+  status/control and 100 for coalesced detector summaries. Status changes use
+  the control reservation; activity, display, and camera uncertainty-reason
+  changes remain distinct bounded detector summaries. Persisted-event
+  deduplication includes activity evidence and native Idle attribution; legacy
+  status-observation reasons migrate into the control reservation. Detector
+  caps select by latest occurrence; detector-only skips caused solely by
+  display/camera reason changes use the detector reservation. Overlapping
+  summaries use the greater repeat count because individual occurrences are not
+  retained; disjoint ranges add. In-flight append identity stays stable, and
+  events recorded during Clear survive while prior visible history is removed.
+  Close the clear-collection window before transferring its final events so a
+  completion-microtask enqueue cannot be dropped.
+  A failed Clear restores through the same retention limits before attempting
+  a best-effort storage reload, so a reload failure cannot expand memory history.
 - Native Idle integration may suppress or clear only the local IDLE event while
   fresh desktop activity is proven. It must not change shared activity times,
   AFK or notification behavior. The desktop timer never uses phone activity.
