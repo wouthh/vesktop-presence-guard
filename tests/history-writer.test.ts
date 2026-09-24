@@ -41,3 +41,26 @@ test("failed pending history obeys the same count and time limits as retained hi
     assert.equal(writer.pendingCount, 100); await assert.rejects(writer.flush());
     now += RETENTION_MS + 1; await writer.flush(); assert.equal(writer.pendingCount, 0); assert.equal(attempts, 1);
 });
+
+test("legacy configured-status observations retain the protected control partition", () => {
+    const now = 2_000_000;
+    const legacyStatus = Array.from({ length: 120 }, (_, i) => ({ ...event(i % 2 ? "status_observed" : "configured_online_observed_native_idle", now - 120 + i), importance: undefined }));
+    const detectorNoise = Array.from({ length: 160 }, (_, i) => ({ ...event(`legacy_detector_${i}`, now - 160 + i), importance: undefined }));
+    const retained = retain([...legacyStatus, ...detectorNoise], now);
+    assert.equal(retained.filter(row => row.reason === "status_observed").length, 60);
+    assert.equal(retained.filter(row => row.reason === "configured_online_observed_native_idle").length, 60);
+    assert.equal(retained.filter(row => row.reason.startsWith("legacy_detector_")).length, 100);
+    assert(retained.filter(row => row.reason === "status_observed" || row.reason === "configured_online_observed_native_idle").every(row => row.importance === "control"));
+});
+
+test("detector cap keeps a frequently repeated cause by its latest occurrence", () => {
+    const now = 2_000_000;
+    const rows = [event("recently_repeated", now - 111)];
+    for (let i = 0; i < 110; i++) rows.push(event(`one_off_${i}`, now - 110 + i));
+    rows.push(event("recently_repeated", now - 1));
+    const retained = retain(rows, now);
+    const repeated = retained.find(row => row.reason === "recently_repeated");
+    assert.equal(repeated?.repeatCount, 2);
+    assert.equal(repeated?.at, now - 1);
+    assert.equal(retained.filter(row => row.importance === "detector").length, 100);
+});

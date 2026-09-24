@@ -408,11 +408,15 @@ test("disabling an awaiting camera transition preserves an enabled Idle owner", 
     f.delayWrite(async () => {}); f.signal("active", "inactive"); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
 });
 test("history clear keeps events recorded after the serialized clear request", async () => {
-    const f = fixture(); f.engine.sample(); const original = f.history[0];
+    const f = fixture(); f.engine.sample(); const original = f.history.find(event => event.importance === "detector")!;
     let view = [original]; let release!: () => void;
     const clearing = clearHistoryView({ get: () => view, set: value => { view = value; } }, () => new Promise(r => { release = () => r(undefined); }));
-    const later = { ...original, at: original.at + 1 }; view = [...view, later]; release(); await clearing;
-    assert.deepEqual(view, [later]);
+    assert.deepEqual(view, []);
+    const later = { ...original, at: original.at + 1 };
+    view = retain([...view, later], later.at);
+    release(); await clearing;
+    assert.equal(view.length, 1); assert.equal(view[0].at, later.at);
+    assert.equal(view[0].firstAt, later.at); assert.equal(view[0].repeatCount, 1);
 });
 
 test("failed clear reloads retained startup history and preserves events received during the request", async () => {

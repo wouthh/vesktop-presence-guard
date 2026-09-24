@@ -11,9 +11,12 @@ export const MAX_EVENTS = 500;
 export const MAX_CONTROL_EVENTS = 400;
 export const MAX_DETECTOR_EVENTS = 100;
 const COALESCE_WINDOW_MS = 15 * 60 * 1_000;
+const LEGACY_CONTROL_OBSERVATIONS = new Set(["status_observed", "configured_online_observed_native_idle"]);
 
 function importance(event: HistoryEvent) {
-    return event.importance ?? (event.kind === "observation" || event.kind === "simulation" ? "detector" : "control");
+    if (event.importance) return event.importance;
+    if (event.kind === "observation" && LEGACY_CONTROL_OBSERVATIONS.has(event.reason)) return "control";
+    return event.kind === "observation" || event.kind === "simulation" ? "detector" : "control";
 }
 
 function detectorKey(event: HistoryEvent) {
@@ -48,8 +51,8 @@ function combineDetectorEvents(events: HistoryEvent[]) {
 export function retain(events: HistoryEvent[], now: number): HistoryEvent[] {
     const valid = events.filter(e => Number.isFinite(e.at) && e.at <= now && e.at >= now - RETENTION_MS)
         .sort((a, b) => a.at - b.at);
-    const controls = valid.filter(e => importance(e) === "control").slice(-MAX_CONTROL_EVENTS);
-    const detectors = combineDetectorEvents(valid.filter(e => importance(e) === "detector")).slice(-MAX_DETECTOR_EVENTS);
+    const controls = valid.filter(e => importance(e) === "control").slice(-MAX_CONTROL_EVENTS).map(e => e.importance === "control" ? e : { ...e, importance: "control" as const });
+    const detectors = combineDetectorEvents(valid.filter(e => importance(e) === "detector")).sort((a, b) => a.at - b.at).slice(-MAX_DETECTOR_EVENTS);
     return [...controls, ...detectors].sort((a, b) => a.at - b.at).slice(-MAX_EVENTS);
 }
 
@@ -71,7 +74,11 @@ export async function loadHistoryView(view: HistoryView, readNative: () => Promi
 }
 
 export async function clearHistoryView(view: HistoryView, clearNative: () => Promise<unknown>, reloadOnFailure: () => Promise<unknown> = async () => {}): Promise<void> {
-    const covered = new Set(view.get());
-    try { await clearNative(); } catch (error) { await reloadOnFailure(); throw error; }
-    view.set(view.get().filter(event => !covered.has(event)));
+    const before = view.get();
+    view.set([]);
+    try { await clearNative(); } catch (error) {
+        view.set([...before, ...view.get()]);
+        await reloadOnFailure();
+        throw error;
+    }
 }

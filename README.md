@@ -35,9 +35,11 @@ decisions are summarized by reason and 15-minute window with first/last times
 and a count, so polling noise cannot evict the status-write trail. Legacy
 history remains readable. It uses restrictive permissions
 and atomic writes with temporary-file cleanup on failure, and contains no
-account IDs. Clear it in the panel or explicitly export JSON to a chosen local
-file. Nothing is uploaded. Local observations do not independently prove what
-another session or user sees. Confirmation means Discord applied the local
+account IDs. Legacy configured-status observation events migrate to the
+protected control-history allowance. Clear it in the panel or explicitly export
+JSON to a chosen local file; events recorded while Clear is pending remain
+visible. Nothing is uploaded. Local observations do not independently prove
+what another session or user sees. Confirmation means Discord applied the local
 update; it does not prove a successful server save.
 The panel reports local storage failures separately from status-hook health. It
 also exposes helper sequence and freshness, the GNOME idle counter, remaining
