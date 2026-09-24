@@ -36,11 +36,13 @@ function serial<T>(f: () => Promise<T>): Promise<T> {
 function validEvent(event: unknown): event is HistoryEvent {
     if (!event || typeof event !== "object") return false;
     const e = event as HistoryEvent;
-    return Number.isFinite(e.at) && typeof e.owned === "boolean" && ["observation", "request", "confirmation", "skip", "simulation", "error", "boundary"].includes(e.kind)
+    return Number.isFinite(e.at) && typeof e.owned === "boolean" && ["observation", "request", "confirmation", "skip", "simulation", "error", "boundary", "save"].includes(e.kind)
         && ["manual", "plugin", "native/client", "external", "unknown"].includes(e.source)
         && [e.previous, e.status, e.configured, e.aggregate].every(s => status(s) === s)
         && typeof e.reason === "string" && e.reason.length <= 240
-        && [e.display, e.camera].every(s => s && ["active", "inactive", "unknown"].includes(s.value) && Number.isFinite(s.at) && typeof s.reason === "string" && s.reason.length <= 240 && typeof s.scope === "string" && s.scope.length <= 180)
+        && [e.display, e.camera, ...(e.activity ? [e.activity] : [])].every(s => s && ["active", "inactive", "unknown"].includes(s.value) && Number.isFinite(s.at) && typeof s.reason === "string" && s.reason.length <= 240 && typeof s.scope === "string" && s.scope.length <= 180)
+        && (e.nativeIdleAttributed === undefined || typeof e.nativeIdleAttributed === "boolean")
+        && (e.saveState === undefined || ["pending", "succeeded", "failed", "unavailable"].includes(e.saveState))
         && (e.display.facts === undefined || displayFacts(e.display.facts) !== undefined)
         && JSON.stringify(e).length < 4096;
 }
@@ -60,9 +62,9 @@ export async function readHistory(_: IpcMainInvokeEvent) { return serial(history
 export async function appendHistory(_: IpcMainInvokeEvent, event: HistoryEvent) {
     if (!validEvent(event)) throw Error("invalid_history_event");
     // Reconstruct fields to discard unknown renderer-supplied properties.
-    const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, display, camera } = event;
+    const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, nativeIdleAttributed, activity, saveState, display, camera } = event;
     const signal = (s: typeof display) => ({ at: s.at, value: s.value, reason: s.reason, scope: s.scope });
-    return serial(async () => atomic("history.json", mergeHistory(await history(), [{ at, kind, source, previous, status: current, configured, aggregate, reason, owned, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
+    return serial(async () => atomic("history.json", mergeHistory(await history(), [{ at, kind, source, previous, status: current, configured, aggregate, reason, owned, nativeIdleAttributed, activity: activity ? signal(activity) : undefined, saveState, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
 }
 export async function clearHistory(_: IpcMainInvokeEvent) { return serial(() => atomic("history.json", [])); }
 export async function exportHistory(_: IpcMainInvokeEvent) {
@@ -85,6 +87,21 @@ export async function displaySnapshot(_: IpcMainInvokeEvent) {
         return snapshot.observation ?? null;
     } catch { return null; }
 }
+export async function activitySnapshot(_: IpcMainInvokeEvent) {
+    try {
+        const config = await bounded(join(directory, "installation.json"), 4096);
+        if (typeof config.snapshot !== "string" || !isAbsolute(config.snapshot)) return null;
+        const snapshot = await bounded(config.snapshot, 8192);
+        const { activity } = snapshot;
+        if (snapshot.version !== 1 || !Number.isFinite(snapshot.at) || Date.now() < snapshot.at || Date.now() - snapshot.at > 10000
+            || !activity || !Number.isFinite(activity.at) || Date.now() < activity.at || Date.now() - activity.at > 10000
+            || !Number.isFinite(activity.idleMs) || activity.idleMs < 0 || typeof activity.suspended !== "boolean"
+            || typeof activity.provider !== "string" || !activity.provider || activity.provider.length > 512
+            || !Number.isInteger(activity.activitySerial) || activity.activitySerial < 0
+            || !Number.isFinite(activity.activityAt) || activity.activityAt < 0 || activity.activityAt > activity.at) return null;
+        return activity;
+    } catch { return null; }
+}
 export async function pipeWireSnapshot(_: IpcMainInvokeEvent): Promise<string | null> {
     if (pwBusy) return null;
     pwBusy = true;
@@ -97,10 +114,10 @@ export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {
     const v = value as Record<string, unknown>;
     // Fixed keys only. Account IDs and arbitrary renderer objects are never persisted here.
     const result: Record<string, unknown> = { at: Date.now() };
-    for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "cameraReason", "patchError", "storageHealth"]) {
+    for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "activityReason", "activityValue", "cameraReason", "patchError", "storageHealth", "saveState"]) {
         if (typeof v[key] === "string") result[key] = (v[key] as string).slice(0,240);
     }
-    for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive"]) {
+    for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "nativeIdleHook", "nativeIdleAttributed", "saveHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive"]) {
         result[key] = typeof v[key] === "boolean" ? v[key] : null;
     }
     await serial(() => atomic("diagnostics.json", result));

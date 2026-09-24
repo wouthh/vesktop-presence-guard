@@ -15,7 +15,9 @@ export class PresenceEngine {
     private stopped = false;
     private pending: WriteToken | null = null;
     private previous: Snapshot | null = null;
-    private owner: { status: Status; rule: Rule } | null = null;
+    private owner: { status: Status; rule: Rule; token: WriteToken } | null = null;
+    private latestAppliedWrite: WriteToken | null = null;
+    private terminalSaveTokens = new WeakSet<WriteToken>();
     private paused = new Set<Rule>();
     private decisionKey = "";
     private detectorEpoch = -Infinity;
@@ -24,14 +26,14 @@ export class PresenceEngine {
     latestDecision = "starting";
     constructor(private adapter: Adapter, private clock: Clock, private options: Options) {}
 
-    get ownership() { return this.owner ? { ...this.owner } : null; }
+    get ownership() { return this.owner ? { status: this.owner.status, rule: this.owner.rule } : null; }
     get pausedRules() { return [...this.paused]; }
     get running() { return !this.stopped; }
 
-    private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective) {
+    private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"]) {
         this.latestDecision = reason;
         if (!this.options.observe) return;
-        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, display: { ...s.display }, camera: { ...s.camera } });
+        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, display: { ...s.display }, camera: { ...s.camera } });
     }
 
     private invalidate(keepOwner = false) {
@@ -41,6 +43,7 @@ export class PresenceEngine {
         this.scheduledRule = null;
         this.pending = null;
         if (!keepOwner) this.owner = null;
+        if (!keepOwner) this.latestAppliedWrite = null;
     }
 
     boundary(reason: string) {
@@ -51,15 +54,19 @@ export class PresenceEngine {
     }
 
     manual(value: Status) {
+        const affected = [this.owner?.rule, this.pending?.rule, this.scheduledRule].filter((rule): rule is Rule => !!rule);
         this.invalidate();
         this.manualPending = value === "online" ? null : value;
         if (value === "online") this.paused.clear();
+        else { this.paused.add("idle"); for (const rule of affected) this.paused.add(rule); }
         this.decisionKey = "";
         this.emit("boundary", "manual_selection_ownership_revoked", "manual", this.adapter.read(), undefined, value);
         // The caller schedules a fresh sample after Discord processes the action.
     }
 
     external(source: Source = "unknown") {
+        this.paused.add("idle");
+        this.paused.add("camera");
         if (this.owner) this.paused.add(this.owner.rule);
         if (this.pending) this.paused.add(this.pending.rule);
         if (this.scheduledRule) this.paused.add(this.scheduledRule);
@@ -92,6 +99,25 @@ export class PresenceEngine {
         this.sample();
     }
 
+    saveOutcome(token: WriteToken, state: NonNullable<HistoryEvent["saveState"]>, reason: string) {
+        this.emit("save", reason, "plugin", this.adapter.read(), undefined, token.target, state);
+        const wasAlreadyTerminal = this.terminalSaveTokens.has(token);
+        const failedPendingWrite = this.pending === token;
+        const failedOwnedWrite = this.owner?.token === token;
+        const failedLatestWrite = this.latestAppliedWrite === token;
+        if (["succeeded", "failed", "unavailable"].includes(state)) {
+            this.terminalSaveTokens.add(token);
+            if (this.latestAppliedWrite === token) this.latestAppliedWrite = null;
+        }
+        if (state === "failed" && !wasAlreadyTerminal && (failedPendingWrite || failedOwnedWrite || failedLatestWrite)) {
+            this.paused.add(token.rule);
+            // A delayed save failure may belong to the current owner while a
+            // different rule is already writing. Revoke only this token's
+            // pending mutation; never cancel unrelated scheduled or in-flight work.
+            if (failedPendingWrite) this.invalidate(true);
+        }
+    }
+
     stop() {
         this.boundary("plugin_stopped_status_left_unchanged");
         this.stopped = true;
@@ -112,12 +138,13 @@ export class PresenceEngine {
             const becameUncertain = !this.previous || (this.previous.connected && !s.connected) || (this.previous.account && !s.account) || (this.previous.capable && !s.capable);
             if (becameUncertain || this.owner || this.pending || this.timer !== undefined) this.boundary("connection_or_capability_uncertain");
         }
-        const ownConfirmation = token !== undefined && token === this.pending && token.generation === this.generation && s.connected && s.capable && s.account && s.configured === token.target && s.effective === token.target;
+        const ownConfirmation = token !== undefined && token === this.pending && token.generation === this.generation && s.connected && s.capable && s.account && s.configured === token.target;
         if (ownConfirmation) {
-            this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule };
+            this.latestAppliedWrite = this.terminalSaveTokens.has(token) ? null : token;
+            this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule, token };
             this.pending = null;
-            this.emit("confirmation", "confirmed_local_update_server_save_not_proven", "plugin", s);
-        } else if (this.owner && (s.configured !== this.owner.status || s.effective !== this.owner.status)) {
+            this.emit("confirmation", "configured_status_locally_applied_effective_presence_observed_separately", "plugin", s);
+        } else if (this.owner && s.configured !== this.owner.status) {
             this.paused.add(this.owner.rule);
             this.invalidate();
             this.emit("skip", "status_conflict_rule_paused", source, s);
@@ -129,34 +156,55 @@ export class PresenceEngine {
         if (this.previous && JSON.stringify(s.display.facts) !== JSON.stringify(this.previous.display.facts)) {
             this.emit("observation", "display_facts_observed_cause_not_proven", "unknown", s, s.effective);
         }
+        if (!this.previous || s.activity.value !== this.previous.activity.value || s.activity.reason !== this.previous.activity.reason || s.nativeIdleAttributed !== this.previous.nativeIdleAttributed) {
+            this.emit("observation", s.activity.value === "active" ? "desktop_activity_confirmed" : s.activity.value === "inactive" ? "desktop_inactivity_confirmed" : "desktop_activity_uncertain", "unknown", s, s.effective);
+        }
         this.previous = s;
         this.consider();
     }
 
-    private eligible(s: Snapshot) {
-        if (!s.connected || !s.capable || !s.account || this.manualPending !== null) return false;
-        if (this.owner) return s.effective === this.owner.status && s.configured === this.owner.status;
-        return s.configured === "online" && s.effective === "online";
+    private ready(s: Snapshot) {
+        return s.connected && s.capable && !!s.account && this.manualPending === null;
     }
 
     private decide(s: Snapshot, simulation = false): { target?: Status; rule?: Rule; reason: string } {
         if (this.manualPending !== null) return { reason: "manual_selection_awaiting_configured_status" };
-        if (!this.eligible(s)) return { reason: "non_owned_or_uncertain_status" };
+        if (!this.ready(s)) return { reason: "non_owned_or_uncertain_status" };
+        if (this.owner && s.configured !== this.owner.status) return { reason: "owned_configured_status_changed" };
         const camera = simulation || this.options.camera;
         const idle = simulation || this.options.idle;
         if (camera && !this.paused.has("camera")) {
-            if (s.camera.at <= this.detectorEpoch) return { reason: "camera_sample_from_previous_epoch" };
-            if (fresh(s.camera, this.clock.now()) && s.camera.value === "active") return { target: "dnd", rule: "camera", reason: "confirmed_camera_capture" };
-            if (!fresh(s.camera, this.clock.now()) && this.owner?.rule === "camera") return { reason: "camera_unknown_no_release" };
+            const cameraEligible = !!this.owner || (s.configured === "online" && s.effective === "online");
+            if (cameraEligible) {
+                if (s.camera.at <= this.detectorEpoch) return { reason: "camera_sample_from_previous_epoch" };
+                if (fresh(s.camera, this.clock.now()) && s.camera.value === "active") return { target: "dnd", rule: "camera", reason: "confirmed_camera_capture" };
+                if (!fresh(s.camera, this.clock.now()) && this.owner?.rule === "camera") return { reason: "camera_unknown_no_release" };
+            }
         }
         if (idle && !this.paused.has("idle")) {
-            if (s.display.at <= this.detectorEpoch) return { reason: "display_sample_from_previous_epoch" };
-            if (fresh(s.display, this.clock.now()) && s.display.value === "inactive") return { target: "idle", rule: "idle", reason: "inferred_inactivity_blanking" };
-            if (!fresh(s.display, this.clock.now())) return { reason: "display_unknown_no_release" };
+            if (!this.owner && s.configured === "online") {
+                if (!simulation && !s.nativeIdleHookReady) return { reason: "native_idle_hook_not_ready" };
+                const online = s.effective === "online";
+                const nativeIdle = s.effective === "idle" && s.nativeIdle === true && s.nativeIdleAttributed;
+                if (!online && !nativeIdle) return { reason: s.effective === "idle" ? "effective_idle_not_attributed_to_native" : "effective_presence_uncertain" };
+                if (s.activity.at <= this.detectorEpoch) return { reason: "activity_sample_from_previous_epoch" };
+                if (fresh(s.activity, this.clock.now()) && s.activity.value === "inactive") return { target: "idle", rule: "idle", reason: "desktop_inactive_for_300_seconds" };
+                if (!fresh(s.activity, this.clock.now())) return { reason: "activity_data_missing_or_stale" };
+            }
         }
         if (this.owner) {
-            if (fresh(s.display, this.clock.now()) && s.display.value === "active" && s.nativeIdle === false && (!camera || (fresh(s.camera, this.clock.now()) && s.camera.value === "inactive"))) {
-                return { target: "online", rule: this.owner.rule, reason: "confirmed_return_releasing_owned_status" };
+            const releaseAlreadyInFlight = this.pending?.target === "online" && this.pending.rule === this.owner.rule;
+            if (this.owner.rule === "idle") {
+                if (fresh(s.activity, this.clock.now()) && s.activity.value === "active" && (!this.paused.has(this.owner.rule) || releaseAlreadyInFlight)) {
+                    return { target: "online", rule: "idle", reason: "confirmed_desktop_activity_releasing_owned_idle" };
+                }
+                if (this.paused.has(this.owner.rule)) return { reason: "owned_rule_paused_after_write_failure" };
+                if (!fresh(s.activity, this.clock.now())) return { reason: "activity_data_missing_or_stale_no_release" };
+            } else {
+                if (fresh(s.display, this.clock.now()) && s.display.value === "active" && s.nativeIdle === false && (!camera || (fresh(s.camera, this.clock.now()) && s.camera.value === "inactive")) && (!this.paused.has(this.owner.rule) || releaseAlreadyInFlight)) {
+                    return { target: "online", rule: this.owner.rule, reason: "confirmed_return_releasing_owned_status" };
+                }
+                if (this.paused.has(this.owner.rule)) return { reason: "owned_rule_paused_after_write_failure" };
             }
             return { reason: "return_not_confirmed" };
         }
@@ -168,12 +216,12 @@ export class PresenceEngine {
         const s = this.adapter.read();
         const simulation = !this.options.idle && !this.options.camera;
         const d = this.decide(s, simulation);
-        const key = JSON.stringify([simulation, d, s.configured, s.effective, s.display.value, s.display.reason, s.camera.value, s.camera.reason, this.ownership]);
+        const key = JSON.stringify([simulation, d, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.activity.reason, s.display.value, s.display.reason, s.camera.value, s.camera.reason, this.ownership]);
         if (key !== this.decisionKey) {
             this.decisionKey = key;
             this.emit(simulation ? "simulation" : "skip", simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason, "plugin", s, undefined, d.target ?? s.effective);
         }
-        if (simulation || this.busy || this.timer !== undefined || !d.target || !d.rule || d.target === s.effective) return;
+        if (simulation || this.busy || this.timer !== undefined || !d.target || !d.rule || d.target === s.configured) return;
         const token: WriteToken = { generation: this.generation, target: d.target, rule: d.rule };
         this.scheduledRule = d.rule;
         this.timer = this.clock.set(() => {
@@ -182,7 +230,7 @@ export class PresenceEngine {
             const guard = () => {
                 const current = this.adapter.read();
                 const next = this.decide(current);
-                return !this.stopped && token.generation === this.generation && current.account === s.account && this.eligible(current) && next.target === token.target && next.rule === token.rule && (this.options.idle || this.options.camera);
+                return !this.stopped && token.generation === this.generation && current.account === s.account && next.target === token.target && next.rule === token.rule && (this.options.idle || this.options.camera);
             };
             if (!guard()) { this.emit("skip", "pending_decision_invalidated", "plugin", this.adapter.read()); return; }
             this.busy = true;

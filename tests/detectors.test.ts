@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PipeWireDetector, combineCamera, cameraSnapshot } from "../src/core/camera";
 import { DisplayDetector, type DisplayObservation } from "../src/core/display";
+import { ActivityDetector, IDLE_THRESHOLD_MS, type ActivityObservation } from "../src/core/activity";
 import { UNKNOWN } from "../src/core/types";
 const display = (extra: Partial<DisplayObservation> = {}): DisplayObservation => ({ at: 1000, power: 0, idleMs: 0, thresholdMs: 300000, locked: false, shieldActive: false, suspended: false, topology: "synthetic-topology", monitors: 2, provider: "synthetic-provider", ...extra });
 test("display needs correlated idle and power transition; confirms activity return", () => {
@@ -85,6 +86,79 @@ test("PipeWire restart cannot clear capture by reusing node IDs", () => {
 test("missing display lock/suspend fields cannot prove return", () => {
     const sample = display(); delete (sample as Partial<DisplayObservation>).locked;
     assert.equal(new DisplayDetector().observe(sample).value, "unknown");
+});
+
+const activitySample = (extra: Partial<ActivityObservation> = {}): ActivityObservation => ({ at: 1000, idleMs: 1000, suspended: false, provider: "mutter-owner/session/helper/epoch-1", activitySerial: 0, activityAt: 0, ...extra });
+test("system-wide input watch recognizes one brief activity pulse and carries it until five minutes", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample()).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 2000, idleMs: 100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    assert.equal(d.observe(activitySample({ at: 2000, idleMs: 100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    assert.equal(d.observe(activitySample({ at: 4000, idleMs: 2100, activitySerial: 1, activityAt: 1900 })).value, "active");
+    let result = "active";
+    for (let at = 14000, idleMs = 12100; at < 302000; at += 10000, idleMs += 10000) result = d.observe(activitySample({ at, idleMs, activitySerial: 1, activityAt: 1900 })).value;
+    assert.equal(result, "active");
+    assert.equal(d.observe(activitySample({ at: 302000, idleMs: IDLE_THRESHOLD_MS, activitySerial: 1, activityAt: 1900 })).value, "inactive");
+});
+test("duplicate helper snapshots at the inactivity boundary do not restart qualification", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample({ idleMs: IDLE_THRESHOLD_MS - 1000 })).value, "unknown");
+    const crossed = activitySample({ at: 2000, idleMs: IDLE_THRESHOLD_MS });
+    assert.equal(d.observe(crossed).value, "inactive");
+    assert.equal(d.observe(crossed).value, "inactive");
+    assert.equal(d.observe(activitySample({ at: 4000, idleMs: IDLE_THRESHOLD_MS + 2000 })).value, "inactive");
+});
+test("initial fresh input event is recognized without a prior poll baseline", () => {
+    const d = new ActivityDetector();
+    assert.equal(d.observe(activitySample({ activitySerial: 1, activityAt: 900 })).value, "active");
+});
+test("provider restart and low counter do not fabricate activity", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 90000 }));
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 0, provider: "restarted", activitySerial: 0, activityAt: 0 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 5000, idleMs: 2000, provider: "restarted" })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 7000, idleMs: 100, provider: "restarted", activitySerial: 1, activityAt: 6900 })).value, "active");
+});
+test("counter reset, suspend and stale continuity never count as input", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 70000 }));
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 0 })).reason, "idle_counter_reset_without_activity_event");
+    assert.equal(d.observe(activitySample({ at: 5000, idleMs: 1000 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 7000, idleMs: 3000, suspended: true })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 9000, idleMs: 0 })).value, "unknown");
+    assert.equal(d.observe(activitySample({ at: 25000, idleMs: 16000 })).reason, "activity_continuity_lost");
+});
+test("an unavailable activity interval keeps a recovery boundary before inactivity can be requalified", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ at: 1000, idleMs: IDLE_THRESHOLD_MS + 1000 }));
+    assert.equal(d.observe(null, 2000).value, "unknown");
+    const replacement = activitySample({ at: 100000, idleMs: IDLE_THRESHOLD_MS + 100000, provider: "replacement" });
+    assert.equal(d.observe(replacement).reason, "activity_recovery_boundary");
+    assert.equal(d.observe(activitySample({ ...replacement, at: 102000, idleMs: replacement.idleMs + 2000 })).value, "unknown");
+    let result = "unknown";
+    for (let at = 112000; at <= 402000; at += 10000) result = d.observe(activitySample({ ...replacement, at, idleMs: replacement.idleMs + at - replacement.at })).value;
+    assert.equal(result, "inactive");
+});
+test("reconnect reset preserves a five-minute recovery boundary for an already-high idle counter", () => {
+    const d = new ActivityDetector(); d.observe(activitySample({ idleMs: 90_000 })); d.reset(true);
+    const resumed = activitySample({ at: 100_000, idleMs: IDLE_THRESHOLD_MS + 100_000, provider: "post-resume-epoch" });
+    assert.equal(d.observe(resumed).reason, "activity_recovery_boundary");
+    assert.equal(d.observe(activitySample({ ...resumed, at: 102_000, idleMs: resumed.idleMs + 2_000 })).reason, "activity_boundary_requalifying");
+    let value: string = "unknown";
+    for (let at = 112_000; at < resumed.at + IDLE_THRESHOLD_MS; at += 10_000) {
+        value = d.observe(activitySample({ ...resumed, at, idleMs: resumed.idleMs + at - resumed.at })).value;
+    }
+    assert.equal(value, "unknown");
+    assert.equal(d.observe(activitySample({ ...resumed, at: resumed.at + IDLE_THRESHOLD_MS, idleMs: resumed.idleMs + IDLE_THRESHOLD_MS })).value, "inactive");
+});
+test("a fresh Mutter input pulse still bypasses reconnect inactivity requalification", () => {
+    const d = new ActivityDetector(); d.observe(activitySample()); d.reset(true);
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 100, provider: "post-resume-epoch", activitySerial: 1, activityAt: 2900 })).value, "active");
+});
+test("one genuine input pulse is still recognized when activity returns after an unavailable interval", () => {
+    const d = new ActivityDetector(); d.observe(activitySample()); d.observe(null, 2000);
+    assert.equal(d.observe(activitySample({ at: 3000, idleMs: 100, activitySerial: 1, activityAt: 2900, provider: "replacement" })).value, "active");
+});
+test("a fresh one-shot input signal remains valid across a polling gap without crossing providers", () => {
+    const d = new ActivityDetector(); d.observe(activitySample());
+    assert.equal(d.observe(activitySample({ at: 25000, idleMs: 100, activitySerial: 1, activityAt: 24000 })).value, "active");
 });
 
 test("hot re-enable blocks fresh PipeWire acquisition when local camera continuity was lost", () => {

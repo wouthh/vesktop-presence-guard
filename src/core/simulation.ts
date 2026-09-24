@@ -11,7 +11,7 @@ export async function simulate(): Promise<string[]> {
     let now = 100000;
     let timer: (() => void) | null = null;
     const events: HistoryEvent[] = [];
-    const s: Snapshot = { account: "simulation", connected: true, capable: true, configured: "online", effective: "online", aggregate: "online", nativeIdle: false, display: { value: "inactive", at: now, reason: "synthetic_blanking", scope: "SIMULATION" }, camera: { value: "inactive", at: now, reason: "synthetic_clear", scope: "SIMULATION" } };
+    const s: Snapshot = { account: "simulation", connected: true, capable: true, nativeIdleHookReady: true, configured: "online", effective: "online", aggregate: "online", nativeIdle: false, nativeIdleAttributed: false, activity: { value: "inactive", at: now, reason: "synthetic_300_second_inactivity", scope: "SIMULATION" }, display: { value: "inactive", at: now, reason: "synthetic_blanking", scope: "SIMULATION" }, camera: { value: "inactive", at: now, reason: "synthetic_clear", scope: "SIMULATION" } };
     const engine = new PresenceEngine({ read: () => structuredClone(s), record: e => events.push(e), write: async (token, guard) => { if (guard()) { s.effective = s.configured = token.target; engine.sample("plugin", token); } } }, { now: () => now, set: fn => { timer = fn; return 1; }, clear: () => { timer = null; } }, { observe: true, idle: true, camera: true });
     async function step() {
         s.display.at = s.camera.at = now; engine.sample(); now += 2000;

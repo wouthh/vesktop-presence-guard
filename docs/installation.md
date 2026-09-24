@@ -119,6 +119,12 @@ their existing launchers. The panel opens once. Verify the main profile's local
 commit, hooks, detector health, other plugins, and startup errors. These are
 private local diagnostics, never public artifacts.
 
+For the authorized 0.2.0 managed update, verify Main is enabled with Automatic
+Idle enabled; its fixed desktop inactivity threshold is 300 seconds. Verify the
+Alt PresenceGuard plugin remains disabled. Preserve Main's existing Webcam DND
+choice and all unrelated settings. The update path preserves saved choices; it
+does not rewrite full profile settings.
+
 For later updates, pull/review changes normally, run `pnpm check`, commit them,
 run `prepare`, gracefully close the mapped profiles under the same restart authority,
 and run `update` instead of `install`. Existing rule preferences are preserved.
