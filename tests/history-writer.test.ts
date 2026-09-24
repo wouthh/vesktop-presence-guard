@@ -85,6 +85,15 @@ test("legacy repetitive automation decisions migrate out of the protected contro
     assert(retained.filter(row => row.reason === "automation_paused").every(row => row.importance === "detector"));
 });
 
+test("unknown untagged legacy skips keep control priority while current skips use their explicit class", () => {
+    const now = 2_000_000;
+    const legacyControl = { ...event("status_conflict_rule_paused", now), kind: "skip" as const };
+    const currentDetector = { ...event("no_change_needed", now + 1), kind: "skip" as const, importance: "detector" as const };
+    const retained = retain([legacyControl, currentDetector], now + 1);
+    assert.equal(retained.find(row => row.reason === legacyControl.reason)?.importance, "control");
+    assert.equal(retained.find(row => row.reason === currentDetector.reason)?.importance, "detector");
+});
+
 test("eight hours of engine decisions through HistoryWriter preserve the original write incident", async () => {
     let now = 10_000_000;
     const persisted: HistoryEvent[] = [];

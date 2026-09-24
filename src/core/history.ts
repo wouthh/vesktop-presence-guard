@@ -37,7 +37,10 @@ function importance(event: HistoryEvent) {
     if (event.kind === "skip" && LEGACY_REPETITIVE_DECISIONS.has(event.reason)) return "detector";
     if (event.importance) return event.importance;
     if (event.kind === "observation" && LEGACY_CONTROL_OBSERVATIONS.has(event.reason)) return "control";
-    return event.kind === "observation" || event.kind === "simulation" || event.kind === "skip" ? "detector" : "control";
+    // New engine skips carry an explicit detector/control classification.
+    // Older untagged skips remain control unless they match the narrow legacy
+    // repetitive-decision allowlist above.
+    return event.kind === "observation" || event.kind === "simulation" ? "detector" : "control";
 }
 
 function detectorKey(event: HistoryEvent) {
