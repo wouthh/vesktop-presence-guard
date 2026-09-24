@@ -100,6 +100,12 @@ test("display and camera uncertainty cause changes remain distinct decisions and
     f.s.camera = { ...f.s.camera, reason: "camera_hook_unsupported", at: f.now() }; f.engine.sample();
     const skips = f.history.filter(event => event.kind === "skip");
     assert.equal(skips.length, 4);
+    assert.deepEqual(skips.map(event => [event.display.reason, event.camera.reason, event.importance]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [
+        ["display_poll_failed", "clear", "control"],
+        ["display_provider_restarted", "clear", "detector"],
+        ["display_provider_restarted", "camera_probe_unavailable", "control"],
+        ["display_provider_restarted", "camera_hook_unsupported", "detector"]
+    ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
     const retained = retain(f.history, f.now());
     assert.equal(retained.filter(event => event.kind === "skip").length, 4);
     assert.deepEqual(retained.filter(event => event.kind === "skip").map(event => [event.display.reason, event.camera.reason]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))), [
@@ -108,6 +114,21 @@ test("display and camera uncertainty cause changes remain distinct decisions and
         ["display_provider_restarted", "camera_probe_unavailable"],
         ["display_provider_restarted", "camera_hook_unsupported"]
     ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
+});
+test("detector-only display cause churn stays out of the control-history partition", () => {
+    const f = fixture(); f.engine.sample();
+    f.s.display = { ...f.s.display, value: "unknown", reason: "display_cause_0", at: f.now() }; f.engine.sample();
+    const controlCount = f.history.filter(event => event.importance === "control").length;
+    for (let i = 1; i <= 420; i++) {
+        f.s.display = { ...f.s.display, reason: `display_cause_${i}`, at: f.now() };
+        f.engine.sample();
+    }
+    const churn = f.history.filter(event => event.kind === "skip" && event.display.reason.startsWith("display_cause_"));
+    assert.equal(churn.length, 421);
+    assert(churn.slice(1).every(event => event.importance === "detector"));
+    const retained = retain(f.history, f.now());
+    assert.equal(retained.filter(event => event.importance === "control").length, controlCount);
+    assert(retained.some(event => event.display.reason === "display_cause_420"));
 });
 for (const value of ["idle", "dnd", "invisible", "offline", "unknown"] as Status[]) test(`non-owned ${value} remains untouched`, async () => {
     const f = fixture(); f.s.configured = f.s.effective = value; f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);

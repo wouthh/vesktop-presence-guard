@@ -35,6 +35,7 @@ export function normalizeConfiguredStatus(value: unknown): Status {
 function timestamp(value: unknown): string | null | undefined {
     if (value === undefined || value === null) return null;
     const raw = scalar(value);
+    if (raw === undefined || raw === null) return null;
     if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0) return String(raw);
     if (typeof raw === "string" && /^(0|[1-9]\d{0,15})$/.test(raw)) return raw;
     return undefined;

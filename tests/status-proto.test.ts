@@ -31,6 +31,16 @@ test("group envelope reads duration wrappers beside status and rejects conflicts
     assert.equal(conflict.hasStatus, false);
 });
 
+test("null expiry inside a supported timestamp wrapper means no duration", () => {
+    for (const status of [{ value: "online" }, { status: { value: "online" } }]) {
+        const parsed = parseStatusProto({ status, statusExpiresAtMs: { value: null } });
+        assert.notEqual(parsed.shape, "unsupported");
+        assert.equal(parsed.hasStatus, true);
+        assert.equal(parsed.hasExpiresAtMs, true);
+        assert.equal(parsed.expiresAtMs, null);
+    }
+});
+
 test("status-only nested updates are supported and unknown status shapes fail closed", () => {
     assert.equal(parseStatusProto({ status: { status: { value: "dnd" } } }).configured, "dnd");
     assert.equal(parseStatusProto({ status: { unexpected: "idle" } }).shape, "unsupported");

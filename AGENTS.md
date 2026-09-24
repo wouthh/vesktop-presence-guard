@@ -41,8 +41,9 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
 - Parse only supported configured-status group/root envelopes and wrappers;
   group-level or root-level duration metadata is accepted when unambiguous, and
   malformed or competing status locations and unknown required shapes fail
-  closed. A no-duration picker selection may correlate with an explicit null
-  or zero expiry, but never with a nonzero duration. Save acknowledgements
+  closed. Wrapped null expiry remains valid no-duration evidence. A no-duration
+  picker selection may correlate with an explicit null or zero expiry, but
+  never with a nonzero duration. Save acknowledgements
   require one exact queued updater operation with compatible parsed
   status/duration evidence;
   ambiguous, unparseable, or mismatched evidence never counts as success, while
@@ -53,7 +54,10 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   changes remain distinct bounded detector summaries. Persisted-event
   deduplication includes activity evidence and native Idle attribution; legacy
   status-observation reasons migrate into the control reservation. Detector
-  caps select by latest occurrence, in-flight append identity stays stable, and
+  caps select by latest occurrence; detector-only skips caused solely by
+  display/camera reason changes use the detector reservation. Overlapping
+  summaries use the greater repeat count because individual occurrences are not
+  retained; disjoint ranges add. In-flight append identity stays stable, and
   events recorded during Clear survive while prior visible history is removed.
   A failed Clear restores through the same retention limits before attempting
   a best-effort storage reload, so a reload failure cannot expand memory history.

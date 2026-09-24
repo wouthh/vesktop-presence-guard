@@ -21,6 +21,8 @@ export class PresenceEngine {
     private terminalSaveTokens = new WeakSet<WriteToken>();
     private paused = new Map<Rule, { reason: string; at: number }>();
     private decisionKey = "";
+    private decisionContextKey: string | null = null;
+    private detectorCausesKey: string | null = null;
     private detectorEpoch = -Infinity;
     private manualPending: Status | null = null;
     private confirmedAccount: string | null = null;
@@ -32,6 +34,12 @@ export class PresenceEngine {
     get pausedDetails() { return [...this.paused].map(([rule, detail]) => ({ rule, ...detail })); }
     get pendingPhase() { return this.timer !== undefined ? "debounce" : this.pending || this.busy ? "updater_loading_or_local_apply" : "idle"; }
     get running() { return !this.stopped; }
+
+    private resetDecision() {
+        this.decisionKey = "";
+        this.decisionContextKey = null;
+        this.detectorCausesKey = null;
+    }
 
     private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"], importance?: HistoryEvent["importance"]) {
         if (!this.options.observe) return;
@@ -65,7 +73,7 @@ export class PresenceEngine {
         this.manualPending = value === "online" ? null : value;
         if (value === "online") this.paused.clear();
         else { this.pause("idle", "manual_status_selection"); for (const rule of affected) this.pause(rule, "manual_status_selection"); }
-        this.decisionKey = "";
+        this.resetDecision();
         this.emit("boundary", "manual_selection_ownership_revoked", "manual", this.adapter.read(), undefined, value);
         // The caller schedules a fresh sample after Discord processes the action.
     }
@@ -95,13 +103,13 @@ export class PresenceEngine {
             }
         }
         this.options = { ...next };
-        this.decisionKey = "";
+        this.resetDecision();
         this.sample();
     }
 
     resume() {
         this.paused.clear();
-        this.decisionKey = "";
+        this.resetDecision();
         this.sample();
     }
 
@@ -226,10 +234,15 @@ export class PresenceEngine {
         const d = this.decide(s, simulation);
         this.latestDecision = simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason;
         const key = JSON.stringify([simulation, d.target ?? null, d.rule ?? null, d.reason, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.display.value, s.display.reason, s.camera.value, s.camera.reason, this.ownership, this.pausedRules]);
+        const contextKey = JSON.stringify([simulation, d.target ?? null, d.rule ?? null, d.reason, s.configured, s.effective, s.nativeIdle, s.nativeIdleAttributed, s.activity.value, s.activity.reason, s.display.value, s.camera.value, this.ownership, this.pausedRules]);
+        const detectorCausesKey = JSON.stringify([s.display.reason, s.camera.reason]);
+        const detectorOnlySkip = !simulation && !d.target && this.decisionContextKey === contextKey && this.detectorCausesKey !== null && this.detectorCausesKey !== detectorCausesKey;
         if (key !== this.decisionKey) {
             this.decisionKey = key;
-            this.emit(simulation ? "simulation" : "skip", simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason, "plugin", s, undefined, d.target ?? s.effective);
+            this.emit(simulation ? "simulation" : "skip", simulation ? `would_${d.target ?? "skip"}:${d.reason}` : d.reason, "plugin", s, undefined, d.target ?? s.effective, undefined, detectorOnlySkip ? "detector" : undefined);
         }
+        this.decisionContextKey = contextKey;
+        this.detectorCausesKey = detectorCausesKey;
         if (simulation || this.busy || this.timer !== undefined || !d.target || !d.rule || d.target === s.configured) return;
         const token: WriteToken = { generation: this.generation, target: d.target, rule: d.rule };
         this.scheduledRule = d.rule;
@@ -255,7 +268,7 @@ export class PresenceEngine {
                 if (token.generation === this.generation && this.pending === token) {
                     if (error instanceof WriteCancelledBeforeMutation) {
                         this.pending = null;
-                        this.decisionKey = "";
+                        this.resetDecision();
                         this.emit("skip", "write_cancelled_before_local_mutation_reevaluating", "plugin", this.adapter.read());
                     } else {
                         this.pause(token.rule, "configured_status_write_failed");

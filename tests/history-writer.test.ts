@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HistoryWriter } from "../src/core/historyWriter";
-import { MAX_EVENTS, retain, RETENTION_MS } from "../src/core/history";
+import { MAX_EVENTS, mergeHistory, retain, RETENTION_MS } from "../src/core/history";
 import { UNKNOWN, type HistoryEvent } from "../src/core/types";
 const event = (reason: string, at = 100000): HistoryEvent => ({ at, reason, kind: "observation", source: "unknown", previous: "online", status: "idle", configured: "online", aggregate: "unknown", owned: false, display: UNKNOWN("synthetic"), camera: UNKNOWN("synthetic") });
 test("transient append failure retains the oldest event and retries before later events", async () => {
@@ -63,4 +63,14 @@ test("detector cap keeps a frequently repeated cause by its latest occurrence", 
     assert.equal(repeated?.repeatCount, 2);
     assert.equal(repeated?.at, now - 1);
     assert.equal(retained.filter(row => row.importance === "detector").length, 100);
+});
+
+test("overlapping detector summaries merge as a union without recounting a persisted prefix", () => {
+    const persisted = { ...event("same_detector_reason", 100002), importance: "detector" as const, repeatCount: 2, firstAt: 100000, lastAt: 100002 };
+    const current = { ...event("same_detector_reason", 100003), importance: "detector" as const, repeatCount: 3, firstAt: 100000, lastAt: 100003 };
+    const merged = mergeHistory([persisted], [current], 100003);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].repeatCount, 3);
+    assert.equal(merged[0].firstAt, 100000);
+    assert.equal(merged[0].lastAt, 100003);
 });

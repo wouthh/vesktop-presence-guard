@@ -43,7 +43,15 @@ function combineDetectorEvents(events: HistoryEvent[]) {
         const previous = output[index];
         const firstAt = Math.min(previous.firstAt ?? previous.at, event.firstAt ?? event.at);
         const lastAt = Math.max(previous.lastAt ?? previous.at, event.lastAt ?? event.at);
-        output[index] = { ...previous, at: lastAt, repeatCount: Math.min(1_000_000_000, (previous.repeatCount ?? 1) + (event.repeatCount ?? 1)), firstAt, lastAt };
+        const previousFirstAt = previous.firstAt ?? previous.at;
+        const previousLastAt = previous.lastAt ?? previous.at;
+        const eventFirstAt = event.firstAt ?? event.at;
+        const eventLastAt = event.lastAt ?? event.at;
+        const overlaps = eventFirstAt <= previousLastAt && previousFirstAt <= eventLastAt;
+        const repeatCount = overlaps
+            ? Math.max(previous.repeatCount ?? 1, event.repeatCount ?? 1)
+            : (previous.repeatCount ?? 1) + (event.repeatCount ?? 1);
+        output[index] = { ...previous, at: lastAt, repeatCount: Math.min(1_000_000_000, repeatCount), firstAt, lastAt };
     }
     return output;
 }
