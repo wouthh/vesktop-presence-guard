@@ -11,6 +11,7 @@ import { lstat, mkdir, writeFile } from "fs/promises";
 import { isAbsolute, join } from "path";
 
 import { validateDetectorSnapshot } from "./core/detectorSnapshot";
+import { ownershipTransitionDiagnostic } from "./core/diagnostics";
 import { displayFacts } from "./core/displayFacts";
 import { mergeHistory, retain } from "./core/history";
 import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
@@ -49,6 +50,7 @@ function validEvent(event: unknown): event is HistoryEvent {
         && (e.firstAt === undefined || Number.isFinite(e.firstAt) && e.firstAt <= e.at)
         && (e.lastAt === undefined || Number.isFinite(e.lastAt) && e.lastAt === e.at)
         && (e.saveState === undefined || ["pending", "succeeded", "failed", "unavailable"].includes(e.saveState))
+        && (e.ownershipPhase === undefined || ["none", "active", "suspended"].includes(e.ownershipPhase))
         && (e.display.facts === undefined || displayFacts(e.display.facts) !== undefined)
         && JSON.stringify(e).length < 4096;
 }
@@ -68,9 +70,9 @@ export async function readHistory(_: IpcMainInvokeEvent) { return serial(history
 export async function appendHistory(_: IpcMainInvokeEvent, event: HistoryEvent) {
     if (!validEvent(event)) throw Error("invalid_history_event");
     // Reconstruct fields to discard unknown renderer-supplied properties.
-    const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, importance, repeatCount, firstAt, lastAt, nativeIdleAttributed, activity, saveState, display, camera } = event;
+    const { at, kind, source, previous, status: current, configured, aggregate, reason, owned, importance, repeatCount, firstAt, lastAt, nativeIdleAttributed, activity, saveState, ownershipPhase, display, camera } = event;
     const signal = (s: typeof display) => ({ at: s.at, value: s.value, reason: s.reason, scope: s.scope });
-    return serial(async () => atomic("history.json", mergeHistory(await history(), [{ at, kind, source, previous, status: current, configured, aggregate, reason, owned, importance, repeatCount, firstAt, lastAt, nativeIdleAttributed, activity: activity ? signal(activity) : undefined, saveState, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
+    return serial(async () => atomic("history.json", mergeHistory(await history(), [{ at, kind, source, previous, status: current, configured, aggregate, reason, owned, importance, repeatCount, firstAt, lastAt, nativeIdleAttributed, activity: activity ? signal(activity) : undefined, saveState, ownershipPhase, display: { ...signal(display), facts: displayFacts(display.facts) }, camera: signal(camera) }], Date.now())));
 }
 export async function clearHistory(_: IpcMainInvokeEvent) { return serial(() => atomic("history.json", [])); }
 export async function exportHistory(_: IpcMainInvokeEvent) {
@@ -107,6 +109,15 @@ export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {
     for (const key of ["commit", "configured", "effective", "aggregate", "decision", "mode", "displayReason", "activityReason", "activityValue", "activityContinuityReason", "cameraReason", "patchError", "storageHealth", "saveState", "helperSnapshotHealth", "pendingWritePhase", "configuredSignatureHealth"]) {
         if (typeof v[key] === "string") result[key] = (v[key] as string).slice(0,240);
     }
+    const enums: Record<string, readonly string[]> = {
+        connectionPhase: ["connected", "interrupted", "closed", "revalidating_resumed", "revalidating_fresh"],
+        ownershipPhase: ["none", "active", "suspended"],
+        recoveryBlocker: ["awaiting_connection_revalidation", "awaiting_status_settings_revalidation", "connection_or_status_hooks_unavailable", "current_account_unavailable", "server_account_not_settled", "gateway_session_identity_unavailable", "owned_idle_receipt_unavailable", "status_updater_identity_unavailable", "status_updater_identity_changed_during_reconnect", "configured_status_signature_unavailable", "server_configured_status_unavailable", "server_configured_status_changed_while_disconnected", "server_account_changed_while_disconnected", "reconnection_account_changed", "gateway_session_changed_during_resume", "configured_status_intervention_while_disconnected", "local_settings_not_settled_to_owned_idle", "owned_idle_save_pending", "owned_idle_save_failed", "owned_idle_save_unavailable", "server_and_local_settings_not_settled", "configured_status_changed_while_plugin_owned"],
+        ownershipTransition: ["idle_acquired", "idle_suspended", "idle_revalidated", "idle_revoked", "camera_acquired", "camera_revoked"],
+        ownershipReason: ["plugin_status_locally_applied", "manual_selection", "updater_identity_changed", "server_settings_mismatch", "account_changed", "gateway_session_changed", "plugin_status_write_superseded", "configured_idle_save_confirmed", "connection_revalidated", "gateway_interruption", "external_status_intervention", "connection_changed", "configured_status_changed", "ownership_released"]
+    };
+    for (const [key, allowed] of Object.entries(enums)) if (allowed.includes(v[key] as string)) result[key] = v[key];
+    Object.assign(result, ownershipTransitionDiagnostic(v.ownershipTransitionAt));
     for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "nativeIdleHook", "nativeIdleAttributed", "saveHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive", "helperLeaseHealthy"]) {
         result[key] = typeof v[key] === "boolean" ? v[key] : null;
     }

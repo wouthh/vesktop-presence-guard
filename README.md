@@ -3,7 +3,7 @@
 A small unofficial Vencord userplugin for **local own-status history**, optional
 configured Idle after five minutes of desktop-wide inactivity, and optional webcam DND.
 No backend, telemetry, other-user tracking, or media acquisition. This release is
-**0.2.2**.
+**0.2.3**.
 
 Installation enables PresenceGuard and local history in the selected main
 profile. **Automatic Idle and Webcam DND start off on first installation.** A
@@ -119,15 +119,32 @@ Discord provides no distinguishable event for a cross-device same-value
 selection, PresenceGuard cannot detect it; equal values and timestamps do not
 prove ownership.
 
-Disabling an owning rule, stopping the plugin, switching accounts or reconnecting
-cancels pending work, revokes ownership and leaves configured status unchanged.
-Startup/reconnect establishes fresh detector continuity and never adopts an
-existing configured Idle. A reconnect, suspend/resume gap, provider restart or
-counter reset starts a full five-minute inactivity requalification before Idle
-can be requested; a fresh one-shot input remains immediately recognizable.
-Missing or stale activity evidence holds automation;
-an existing process-local owner may remain while configuration is still valid,
-but return requires fresh desktop input. Ownership never survives a restart.
+Disabling an owning rule, stopping the plugin, switching accounts or observing a
+configured-status intervention cancels pending work, revokes ownership and
+leaves the selected status unchanged. A process restart discards ownership and
+never adopts an existing configured Idle.
+
+A same-process gateway interruption suspends a locally applied, plugin-owned
+Idle claim and cancels its pending mutation permission. The exact updater
+operation and correlated save state remain attached to that claim. Recovery after
+a resumed session requires the same account, updater, gateway session, configured
+status signature and confirmed save. A fresh connection also requires its READY
+account, session and decoded server settings to match settled local settings and
+the claim. Reconnect settings that merely happen to say Idle cannot establish
+ownership or prove a save. Pending, failed or unavailable save evidence, missing
+settings, changed account/session, an observable manual intervention, or an
+updater identity change keeps recovery blocked or revokes the claim. The panel
+shows connection phase, ownership phase, last ownership transition and the
+current recovery blocker.
+
+Detector sampling continues during a gateway outage. A genuine brief desktop
+input remains usable after fresh helper observations re-establish continuity;
+polls started before a connection-generation change are discarded. A reconnect,
+suspend/resume gap, provider restart or counter reset starts a full five-minute
+inactivity requalification before a new Idle can be requested. Missing or stale
+activity evidence never implies a return. A fresh one-shot input remains
+immediately recognizable. Ownership can survive only a same-process reconnect
+with the checks above; it never survives a plugin or Vesktop restart.
 Stopping restores native Idle behavior. Re-enabling the plugin in the same renderer leaves webcam automation
 unavailable until a renderer restart, because acquisitions while disabled cannot
 be reconstructed safely; Idle and observation remain available. Unexplained reversals pause the affected rule instead of repeatedly

@@ -118,6 +118,11 @@ test("production resolver and guarded writer use the raw Preloaded updater when 
     const provenance = new Provenance();
     const trace = new StatusWriteTrace();
     const engineRef: { current?: PresenceEngine } = {};
+    const fireTimer = () => {
+        const callback = timer as unknown as (() => void) | undefined;
+        timer = undefined;
+        callback?.();
+    };
     let favoritesLoads = 0;
     let favoritesMutations = 0;
     const favorites = {
@@ -128,6 +133,8 @@ test("production resolver and guarded writer use the raw Preloaded updater when 
     let statusMutations = 0;
     let receiverIsSelected = false;
     let saveEvidence = "unavailable";
+    const gatewaySession = "synthetic-gateway-session";
+    const appliedStatuses: string[] = [];
     const statusUpdater: any = {
         ...updater(1, preloadedSettings),
         generatedUpdate(owner: object, callback: object, proto: object) { provenance.generated(owner, callback, proto); },
@@ -161,8 +168,11 @@ test("production resolver and guarded writer use the raw Preloaded updater when 
             this.markDirty(proto);
             const token = provenance.take(proto);
             snapshot.configured = draft.status.value;
+            snapshot.effective = draft.status.value;
             if (token) {
                 trace.update(token, "locally_applied", "locally_applied", now);
+                appliedStatuses.push(draft.status.value);
+                engineRef.current?.captureLocalApplication(token, { account: snapshot.account!, signature: JSON.stringify([draft.status.value, null, null]), updater: this, gatewaySession });
                 engineRef.current?.sample("plugin", token);
             }
             const context = this.saveStarted(this, proto);
@@ -187,7 +197,7 @@ test("production resolver and guarded writer use the raw Preloaded updater when 
     engineRef.current = engine;
 
     engine.sample();
-    now += 2_000; timer?.(); timer = undefined;
+    now += 2_000; fireTimer();
     await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(favoritesLoads, 0);
@@ -202,4 +212,21 @@ test("production resolver and guarded writer use the raw Preloaded updater when 
     assert.equal(saveEvidence, "correlated_save_confirmed");
     assert.equal(trace.lastWrite?.outcome, "save_confirmed");
     assert(events.some(event => event.kind === "confirmation"));
+
+    snapshot.connected = false; engine.connectionInterrupted("connection_interrupted");
+    snapshot.activity = { ...snapshot.activity, value: "active", at: now, reason: "synthetic_brief_input" };
+    engine.sample();
+    snapshot.connected = true;
+    const sequence = engine.beginConnectionRevalidation("resumed");
+    assert.equal(engine.completeConnectionRevalidation(sequence, {
+        kind: "resumed", account: snapshot.account, signature: JSON.stringify(["idle", null, null]),
+        updater: statusUpdater, gatewaySession
+    }), true);
+    now += 2_000; timer?.(); timer = undefined;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(appliedStatuses, ["idle", "online"]);
+    assert.equal(snapshot.configured, "online"); assert.equal(snapshot.effective, "online");
+    assert.equal(engine.ownership, null); assert.equal(saveEvidence, "correlated_save_confirmed");
+    assert.equal(statusLoads, 2); assert.equal(statusMutations, 2);
+    assert.equal(favoritesLoads, 0); assert.equal(favoritesMutations, 0);
 });
