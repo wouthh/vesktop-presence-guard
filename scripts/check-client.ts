@@ -19,6 +19,18 @@ if (!source.slice(statusAt, statusAt + 15_000).includes(`let ${rootStatus[1]}=`)
 const statusUpdates = [...source.matchAll(/updateAsync\("status",/g)].map(match => source.slice(match.index, match.index! + 1_200));
 if (!statusUpdates.some(snippet => /\.status=[\w$.]+\.create\(\{value:\w+\}\)/.test(snippet))) throw Error("configured_status_update_path_changed");
 console.log("status updater: PreloadedUserSettings type, root status field, nested StatusSettings field, and configured picker write path verified");
+const readyAt = source.indexOf('type:"CONNECTION_OPEN",sessionId:');
+if (readyAt < 0) throw Error("gateway_fresh_connection_payload_missing");
+const readyPayload = source.slice(readyAt, readyAt + 2_500);
+for (const field of ["user:", "userSettingsProto:"]) if (!readyPayload.includes(field)) throw Error(`gateway_fresh_connection_${field.replace(":", "")}_missing`);
+if (!/sessionId:[\w$]+\.session_id/.test(readyPayload)) throw Error("gateway_fresh_connection_session_id_missing");
+const resumedAt = source.indexOf('eV(["RESUMED"]');
+if (resumedAt < 0 || !source.slice(resumedAt, resumedAt + 500).includes('{type:"CONNECTION_RESUMED"}')) throw Error("gateway_resumed_event_after_replay_missing");
+if (!/\.on\("disconnect",\w+=>\{let\{code:\w+,reason:\w+\}=\w+;\w+\.h\.dispatch\(\{type:"CONNECTION_CLOSED"/.test(source)) throw Error("gateway_disconnect_event_mapping_changed");
+if (!/\.on\("close",\w+=>\{let\{code:\w+,reason:\w+\}=\w+;\w+\.h\.dispatch\(\{type:"CONNECTION_INTERRUPTED"/.test(source)) throw Error("gateway_interruption_event_mapping_changed");
+if (!source.includes("getSocket(){return B}")) throw Error("gateway_current_socket_accessor_changed");
+if (!/if\("READY"===\w+\)\{let (\w+)=\w+\.session_id;this\.sessionId=\1;/.test(source)) throw Error("gateway_socket_session_identity_changed");
+console.log("gateway lifecycle: fresh READY has account/settings/session evidence; RESUMED, disconnect and close events are present");
 const ast = ts.createSourceFile("client.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const modules: string[] = [];
 function visit(node: ts.Node) {

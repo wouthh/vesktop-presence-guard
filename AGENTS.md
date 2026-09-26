@@ -23,8 +23,18 @@ process-bound GNOME observer; `scripts/` owns checks and installation;
   attribution, configured-status writes and local effective presence distinct.
   Display blanking, locking and Vesktop focus never control the five-minute timer.
 - Ownership begins only after the exact plugin updater operation locally applies
-  configured Idle. Ownership is process-local; never restore it from history or
-  adopt native Idle. Revoke it on an observable configured-status intervention.
+  configured Idle. It may remain suspended across a same-process gateway
+  interruption only with its exact operation receipt and correlated successful
+  save; revalidate account, updater, session and status signature before return.
+  Never restore ownership from history, matching settings or native Idle. Revoke
+  it on an observable configured-status intervention, account change, plugin
+  stop, disable, or updater identity loss.
+- Handle gateway interruption, close, resumed replay and fresh READY as one
+  idempotent lifecycle. Cancel mutation permissions during transport loss while
+  retaining only locally confirmed Idle authority and its independent save
+  correlation. Fresh READY recovery also matches server settings to settled local
+  settings. Polls from earlier connection generations cannot publish activity;
+  valid desktop input collection continues during the outage.
 - Provider/session changes, counter resets, suspend/resume gaps and stale input
   evidence never fabricate activity. Aggregate/session presence updates are not
   proof of a manual configured-status selection.

@@ -18,14 +18,19 @@ function fixture(options: Partial<Options> = {}) {
     const history: HistoryEvent[] = [];
     const writes: Status[] = [];
     const tokens: WriteToken[] = [];
+    const updaterIdentity = {};
+    const gatewaySession = "synthetic-gateway-session";
     let gate: ((token: WriteToken) => Promise<void>) | undefined;
     let ack: (() => Promise<void>) | undefined;
+    let afterApply: ((token: WriteToken) => void | Promise<void>) | undefined;
     const engine = new PresenceEngine({ read: () => structuredClone(s), record: e => history.push(e), write: async (token, guard) => {
         tokens.push(token);
         await gate?.(token);
         if (!guard()) return;
         writes.push(token.target);
         s.configured = s.effective = token.target;
+        engine.captureLocalApplication(token, { account: s.account!, signature: JSON.stringify([token.target, null, null]), updater: updaterIdentity, gatewaySession });
+        await afterApply?.(token);
         await ack?.();
         engine.sample("plugin", token);
     } }, { now: () => now, set: (fn, ms) => { const id = next++; timers.set(id, { at: now + ms, fn }); return id; }, clear: id => { timers.delete(id as number); } }, { observe: true, idle: true, camera: true, ...options });
@@ -39,7 +44,18 @@ function fixture(options: Partial<Options> = {}) {
     function activity(value: Snapshot["activity"]["value"], reason: string = value) { s.activity = { ...s.activity, value, reason, at: now }; engine.sample(); }
     function display(value: Snapshot["display"]["value"]) { s.display = { ...s.display, value, at: now }; engine.sample(); }
     function manual(status: Status) { engine.manual(status); s.configured = s.effective = status; engine.sample("manual"); }
-    return { s, engine, history, writes, tokens, advance, signal, activity, display, manual, flush, now: () => now, delayWrite: (fn: (token: WriteToken) => Promise<void>) => { gate = fn; }, delayAck: (fn: () => Promise<void>) => { ack = fn; } };
+    return { s, engine, history, writes, tokens, updaterIdentity, gatewaySession, advance, signal, activity, display, manual, flush, now: () => now, delayWrite: (fn: (token: WriteToken) => Promise<void>) => { gate = fn; }, delayAck: (fn: () => Promise<void>) => { ack = fn; }, afterApply: (fn: (token: WriteToken) => void | Promise<void>) => { afterApply = fn; } };
+}
+function signature(configured: Status) { return JSON.stringify([configured, null, null]); }
+function revalidate(f: ReturnType<typeof fixture>, kind: "resumed" | "fresh", gatewaySession = f.gatewaySession, serverConfigured = f.s.configured, serverAccount = f.s.account) {
+    f.s.connected = true;
+    const sequence = f.engine.beginConnectionRevalidation(kind);
+    return f.engine.completeConnectionRevalidation(sequence, {
+        kind, account: f.s.account, signature: signature(f.s.configured), updater: f.updaterIdentity, gatewaySession,
+        serverSignature: kind === "fresh" ? signature(serverConfigured) : null,
+        serverAccount: kind === "fresh" ? serverAccount : null,
+        serverSession: kind === "fresh" ? gatewaySession : null
+    });
 }
 for (const boundary of ["reconnect", "account"]) test(`camera evidence must be observed after ${boundary}, not merely read again`, async () => {
     const f = fixture({ idle: false }); f.engine.sample();
@@ -58,6 +74,7 @@ for (const unavailable of ["connected", "capable", "account"] as const) test(`${
     if (unavailable === "account") f.s.account = null; else f.s[unavailable] = false;
     f.engine.sample(); await f.advance(1);
     f.s.connected = f.s.capable = true; f.s.account = "synthetic"; f.engine.sample();
+    if (unavailable === "connected") assert.equal(revalidate(f, "fresh", "recovered-session"), true);
     await f.advance(); assert.deepEqual(f.writes, []);
     f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
 });
@@ -229,8 +246,120 @@ test("stale detector cannot authorize a scheduled write", async () => {
 test("genuine desktop input restores configured Online even when native Idle was set", async () => {
     const f = fixture(); f.signal("inactive"); await f.advance(); f.s.nativeIdle = true; f.s.nativeIdleAttributed = true; f.signal("active"); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
 });
-for (const boundary of ["reconnect", "restart", "logout"]) test(`${boundary} discards ownership`, async () => {
+for (const boundary of ["restart", "logout"]) test(`${boundary} discards ownership`, async () => {
     const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.boundary(boundary); f.signal("active"); await f.advance(); assert.deepEqual(f.writes, ["idle"]);
+});
+test("saved plugin-owned Idle survives a resumed session and one input causes one Online write", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    const idleToken = f.tokens[0]; f.engine.saveOutcome(idleToken, "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted");
+    assert.equal(f.engine.ownership?.status, "idle"); assert.equal(f.engine.ownershipPhase, "suspended");
+    f.activity("active", "single_input_during_outage");
+    assert.equal(revalidate(f, "resumed"), true);
+    assert.equal(f.engine.ownershipPhase, "active");
+    await f.advance(); await f.advance();
+    assert.deepEqual(f.writes, ["idle", "online"]); assert.equal(f.engine.ownership, null);
+});
+test("fresh same-account connection revalidates server and local settings before restoring Idle ownership", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_closed");
+    f.activity("active", "brief_input_while_disconnected");
+    assert.equal(revalidate(f, "fresh", "replacement-session"), true);
+    await f.advance(); await f.advance();
+    assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("connection opening without a prior close still revalidates an owned Idle claim", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.activity("active", "fresh_input");
+    assert.equal(revalidate(f, "fresh", "new-ready-session"), true);
+    await f.advance(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("exact local Idle receipt is retained when disconnect precedes deferred engine sampling", async () => {
+    const f = fixture();
+    f.afterApply(() => { f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); });
+    f.signal("inactive"); await f.advance(); await f.flush();
+    assert.deepEqual(f.writes, ["idle"]); assert.equal(f.engine.ownership?.status, "idle"); assert.equal(f.engine.ownershipPhase, "suspended");
+    const idleToken = f.tokens[0]; f.engine.saveOutcome(idleToken, "succeeded", "synthetic_correlated_save");
+    f.activity("active", "input_after_reconnect");
+    assert.equal(revalidate(f, "resumed"), true);
+    await f.advance(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("matching reconnect settings do not substitute for a correlated Idle save acknowledgement", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); f.activity("active");
+    assert.equal(revalidate(f, "resumed"), false);
+    assert.equal(f.engine.ownershipPhase, "suspended"); assert.equal(f.engine.recoveryReason, "owned_idle_save_pending"); assert.deepEqual(f.writes, ["idle"]);
+    f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    const sequence = Number((f.engine as any).revalidationSequence);
+    assert.equal(f.engine.completeConnectionRevalidation(sequence, { kind: "resumed", account: f.s.account, signature: signature("idle"), updater: f.updaterIdentity, gatewaySession: f.gatewaySession }), true);
+    await f.advance(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+for (const saveState of ["failed", "unavailable"] as const) test(`${saveState} retained save evidence blocks reconnect recovery`, async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.engine.saveOutcome(f.tokens[0], saveState, `synthetic_${saveState}`);
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); f.activity("active");
+    assert.equal(revalidate(f, "resumed"), false); assert.equal(f.engine.ownershipPhase, "suspended");
+    assert.deepEqual(f.writes, ["idle"]);
+});
+test("fresh server status mismatch revokes suspended ownership instead of restoring it", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance();
+    f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_closed"); f.activity("active");
+    assert.equal(revalidate(f, "fresh", "fresh-session", "online"), false);
+    assert.equal(f.engine.ownership, null); assert(f.engine.pausedRules.includes("idle"));
+    await f.advance(); assert.deepEqual(f.writes, ["idle"]);
+});
+test("fresh connection with a different account revokes the retained claim", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_closed"); f.activity("active");
+    assert.equal(revalidate(f, "fresh", "fresh-session", "idle", "another-account"), false);
+    assert.equal(f.engine.ownership, null); assert(f.engine.pausedRules.includes("idle"));
+});
+test("a missing fresh READY account is held, while a confirmed updater replacement revokes", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); f.activity("active"); f.s.connected = true;
+    const missingServerAccountSequence = f.engine.beginConnectionRevalidation("fresh");
+    assert.equal(f.engine.completeConnectionRevalidation(missingServerAccountSequence, {
+        kind: "fresh", account: f.s.account, signature: signature("idle"), updater: f.updaterIdentity, gatewaySession: "fresh-session",
+        serverSignature: signature("idle"), serverAccount: null, serverSession: "fresh-session"
+    }), false);
+    assert.equal(f.engine.ownershipPhase, "suspended");
+    const updaterSequence = f.engine.beginConnectionRevalidation("resumed");
+    assert.equal(f.engine.completeConnectionRevalidation(updaterSequence, {
+        kind: "resumed", account: f.s.account, signature: signature("idle"), updater: {}, gatewaySession: f.gatewaySession
+    }), false);
+    assert.equal(f.engine.ownership, null); assert(f.engine.pausedRules.includes("idle"));
+});
+test("a newer lifecycle ticket fences delayed reconnection verification", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); f.activity("active"); f.s.connected = true;
+    const staleSequence = f.engine.beginConnectionRevalidation("fresh");
+    const currentSequence = f.engine.beginConnectionRevalidation("resumed");
+    assert.notEqual(staleSequence, currentSequence);
+    assert.equal(f.engine.completeConnectionRevalidation(staleSequence, { kind: "fresh", account: f.s.account, signature: signature("idle"), updater: f.updaterIdentity, gatewaySession: "stale", serverSignature: signature("idle"), serverAccount: f.s.account, serverSession: "stale" }), false);
+    assert.equal(f.engine.completeConnectionRevalidation(currentSequence, { kind: "resumed", account: f.s.account, signature: signature("idle"), updater: f.updaterIdentity, gatewaySession: f.gatewaySession }), true);
+    await f.advance(); await f.advance(); assert.deepEqual(f.writes, ["idle", "online"]);
+});
+test("fresh connection never adopts an Idle that lacks this process's ownership receipt", async () => {
+    const f = fixture(); f.s.configured = f.s.effective = "idle"; f.activity("active");
+    assert.equal(revalidate(f, "fresh", "fresh-session", "idle"), true);
+    await f.advance(); assert.equal(f.engine.ownership, null); assert.deepEqual(f.writes, []);
+});
+test("repeated interruption observations do not restart the recovery state or discard its claim", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); const boundaries = f.history.filter(e => e.reason.includes("idle_ownership_suspended")).length;
+    f.engine.connectionInterrupted("connection_or_capability_uncertain"); f.engine.connectionInterrupted("connection_closed"); f.engine.connectionInterrupted("connection_closed");
+    assert.equal(f.engine.connectionPhase, "closed"); assert.equal(f.engine.ownershipPhase, "suspended");
+    assert.equal(f.history.filter(e => e.reason.includes("idle_ownership_suspended")).length, boundaries);
+});
+test("observable manual selection while suspended revokes the saved Idle claim", async () => {
+    const f = fixture(); f.signal("inactive"); await f.advance(); f.engine.saveOutcome(f.tokens[0], "succeeded", "synthetic_correlated_save");
+    f.s.connected = false; f.engine.connectionInterrupted("connection_interrupted"); f.engine.manual("idle");
+    assert.equal(f.engine.ownership, null); f.s.configured = f.s.effective = "idle";
+    assert.equal(revalidate(f, "resumed"), true); f.activity("active"); await f.advance();
+    assert.deepEqual(f.writes, ["idle"]); assert.equal(f.engine.ownership, null);
 });
 test("account change and connection loss invalidate pending actions", async () => {
     for (const change of [(s: Snapshot) => { s.account = "another-synthetic"; }, (s: Snapshot) => { s.connected = false; }]) {
@@ -486,8 +615,8 @@ for (const rule of ["idle", "camera"] as const) test(`unattributed intervention 
 
 test("an unresolved manual choice stays protected across same-account reconnects", async () => {
     const f = fixture(); f.engine.sample(); f.engine.manual("dnd");
-    f.s.connected = false; f.engine.boundary("connection_closed"); f.engine.sample(); await f.advance();
-    f.s.connected = true; f.engine.boundary("connection_open_new_epoch"); await f.advance();
+    f.s.connected = false; f.engine.connectionInterrupted("connection_closed"); f.engine.sample(); await f.advance();
+    assert.equal(revalidate(f, "fresh", "replacement-session"), true); await f.advance();
     f.signal("inactive", "active"); await f.advance(); assert.deepEqual(f.writes, []);
     f.s.account = "different-synthetic-account"; f.engine.sample(); await f.advance();
     f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);
@@ -495,8 +624,8 @@ test("an unresolved manual choice stays protected across same-account reconnects
 
 test("an unknown account during reconnect cannot revoke unresolved manual intent", async () => {
     const f = fixture(); f.engine.sample(); f.engine.manual("dnd");
-    f.s.connected = false; f.s.account = null; f.engine.boundary("connection_closed"); f.engine.sample(); await f.advance();
-    f.s.connected = true; f.s.account = "synthetic"; f.engine.boundary("connection_open_new_epoch"); await f.advance();
+    f.s.connected = false; f.s.account = null; f.engine.connectionInterrupted("connection_closed"); f.engine.sample(); await f.advance();
+    f.s.account = "synthetic"; assert.equal(revalidate(f, "fresh", "replacement-session"), true); await f.advance();
     f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, []);
     f.engine.boundary("logout"); f.s.account = null; f.engine.sample(); await f.advance();
     f.s.account = "synthetic"; f.signal("active", "active"); await f.advance(); assert.deepEqual(f.writes, ["dnd"]);

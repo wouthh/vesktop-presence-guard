@@ -50,6 +50,13 @@ export class ActivityDetector {
         this.continuityReason = requireRequalification ? "new_activity_epoch" : null;
     }
 
+    /** A gateway interruption restarts idle qualification without erasing desktop input proof. */
+    connectionBoundary(now: number) {
+        if (!Number.isFinite(now) || now < 0) return;
+        this.requalifyAt = now;
+        this.continuityReason = "connection_inactivity_requalification";
+    }
+
     observe(o: ActivityObservation | null, now = o?.at ?? Date.now()): Signal {
         const scope = "GNOME system-wide user activity";
         const commonValid = o !== null && Number.isFinite(o.at) && o.at <= now && now - o.at <= MAX_GAP_MS
