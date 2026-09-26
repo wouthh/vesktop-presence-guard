@@ -11,6 +11,7 @@ import { lstat, mkdir, writeFile } from "fs/promises";
 import { isAbsolute, join } from "path";
 
 import { validateDetectorSnapshot } from "./core/detectorSnapshot";
+import { ownershipTransitionDiagnostic } from "./core/diagnostics";
 import { displayFacts } from "./core/displayFacts";
 import { mergeHistory, retain } from "./core/history";
 import { atomicLocalFile, boundedLocalJson as bounded } from "./core/localFile";
@@ -116,7 +117,7 @@ export async function diagnostics(_: IpcMainInvokeEvent, value: unknown) {
         ownershipReason: ["plugin_status_locally_applied", "manual_selection", "updater_identity_changed", "server_settings_mismatch", "account_changed", "gateway_session_changed", "plugin_status_write_superseded", "configured_idle_save_confirmed", "connection_revalidated", "gateway_interruption", "external_status_intervention", "connection_changed", "configured_status_changed", "ownership_released"]
     };
     for (const [key, allowed] of Object.entries(enums)) if (allowed.includes(v[key] as string)) result[key] = v[key];
-    if (Number.isFinite(v.lastOwnershipTransitionAt)) result.lastOwnershipTransitionAt = Number(v.lastOwnershipTransitionAt);
+    Object.assign(result, ownershipTransitionDiagnostic(v.ownershipTransitionAt));
     for (const key of ["enabled", "idle", "camera", "owned", "statusHooks", "nativeIdleHook", "nativeIdleAttributed", "saveHooks", "cameraHook", "panelMounted", "voiceConnected", "localCameraLive", "helperLeaseHealthy"]) {
         result[key] = typeof v[key] === "boolean" ? v[key] : null;
     }
