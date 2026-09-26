@@ -38,6 +38,22 @@ export interface Snapshot {
     display: Signal; // active = confirmed active session, inactive = qualifying blanking
     camera: Signal; // active = confirmed capture, inactive = cleared within stated scope
 }
+export interface LocalApplicationReceipt {
+    account: string;
+    signature: string;
+    updater: object;
+    gatewaySession: string | null;
+}
+export interface ReconnectionEvidence {
+    kind: "resumed" | "fresh";
+    account: string | null;
+    signature: string | null;
+    updater: object | null;
+    gatewaySession: string | null;
+    serverSignature?: string | null;
+    serverAccount?: string | null;
+    serverSession?: string | null;
+}
 export interface Options { observe: boolean; idle: boolean; camera: boolean; }
 export type EventKind = "observation" | "request" | "confirmation" | "skip" | "simulation" | "error" | "boundary" | "save";
 export type EventImportance = "control" | "detector";
@@ -60,6 +76,7 @@ export interface HistoryEvent {
     nativeIdleAttributed?: boolean;
     activity?: Signal;
     saveState?: SaveState;
+    ownershipPhase?: "none" | "active" | "suspended";
     display: Signal;
     camera: Signal;
 }

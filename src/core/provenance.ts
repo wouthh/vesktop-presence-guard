@@ -32,7 +32,7 @@ export class Provenance {
     private callbacks = new WeakMap<object, WriteToken>();
     private callbackOwners = new WeakMap<object, object>();
     private updates = new WeakMap<object, WriteToken>();
-    private updaterTokens = new WeakMap<object, { token: WriteToken; expected: ParsedStatusProto | null }[]>();
+    private updaterTokens = new Map<object, { token: WriteToken; expected: ParsedStatusProto | null }[]>();
     private activeTokens = new Set<WriteToken>();
     private latestLocalToken: WriteToken | null = null;
     private supersededTokens = new WeakSet<WriteToken>();
@@ -61,6 +61,26 @@ export class Provenance {
             this.latestLocalToken = token;
         }
         return token;
+    }
+    peek(proto: unknown) {
+        return proto && typeof proto === "object" ? this.updates.get(proto) : undefined;
+    }
+    retainOnly(token?: WriteToken) {
+        const active = token && this.activeTokens.has(token) ? token : undefined;
+        this.callbacks = new WeakMap(); this.callbackOwners = new WeakMap(); this.updates = new WeakMap(); this.saveAcks = new WeakSet();
+        if (active) {
+            const entries = new Map<object, { token: WriteToken; expected: ParsedStatusProto | null }[]>();
+            for (const [owner, queue] of this.updaterTokens) {
+                const kept = queue.filter(entry => entry.token === active);
+                if (kept.length) entries.set(owner, kept);
+            }
+            this.activeTokens = new Set([active]);
+            this.updaterTokens = entries;
+            this.latestLocalToken = active;
+            this.supersededTokens = new WeakSet();
+        } else {
+            this.updaterTokens = new Map(); this.activeTokens.clear(); this.latestLocalToken = null; this.supersededTokens = new WeakSet();
+        }
     }
     saveQueued(updater: object, proto: object) {
         const token = this.updates.get(proto);
@@ -130,6 +150,6 @@ export class Provenance {
     }
     clear() {
         this.callbacks = new WeakMap(); this.callbackOwners = new WeakMap(); this.updates = new WeakMap();
-        this.updaterTokens = new WeakMap(); this.activeTokens.clear(); this.latestLocalToken = null; this.supersededTokens = new WeakSet(); this.saveAcks = new WeakSet();
+        this.updaterTokens = new Map(); this.activeTokens.clear(); this.latestLocalToken = null; this.supersededTokens = new WeakSet(); this.saveAcks = new WeakSet();
     }
 }

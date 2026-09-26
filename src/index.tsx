@@ -24,7 +24,7 @@ import { isNativeAutomaticIdle } from "./core/native-idle";
 import { PersistenceHealth } from "./core/persistenceHealth";
 import { Provenance } from "./core/provenance";
 import { simulate } from "./core/simulation";
-import { configuredStatusSignature, parseStatusProto } from "./core/statusProto";
+import { configuredSignatureFromProto, configuredStatusSignature, parseStatusProto } from "./core/statusProto";
 import { hasUpdaterMethods, isStatusSettingsEventType, resolveStatusUpdater, StatusWriteTrace, updaterCandidatePredicate, type UpdaterReadiness, writeConfiguredStatus } from "./core/statusUpdater";
 import { CameraTracks } from "./core/tracks";
 import { fresh, HistoryEvent, Options, Snapshot, status, UNKNOWN, WriteToken } from "./core/types";
@@ -52,12 +52,18 @@ let interval: ReturnType<typeof setInterval> | undefined;
 let polling = false;
 let lifecycle = 0;
 let statusHooks = false;
+let requiredHookIdentity: { action: unknown; connectionStates: unknown } | null = null;
 let manualHook = false;
 const manualActions = new WeakSet<object>();
 let expectedManualStatus: { target: string; expiresAt: number; until: number } | null = null;
 let cameraHook = false;
 let cameraContinuity = true;
 let connectionFresh = false;
+let connectionGeneration = 0;
+let transportInterrupted = false;
+let lastReadyKind: "resumed" | "fresh" | null = null;
+let lastReadySession: string | null = null;
+let pendingRevalidation: { sequence: number; generation: number; kind: "resumed" | "fresh"; serverSignature: string | null; serverAccount: string | null; serverSession: string | null } | null = null;
 let patchError = "starting";
 let updater: any = undefined;
 let updaterReadiness: UpdaterReadiness = "not_found";
@@ -107,11 +113,21 @@ function currentConfiguredSignature() {
         return signature;
     } catch { configuredSignatureHealth = "configured_status_signature_read_failed"; return null; }
 }
+function currentGatewaySession() {
+    try {
+        const value = Gateway.getSocket()?.sessionId;
+        return typeof value === "string" && value.length > 0 && value.length <= 512 ? value : null;
+    } catch { return null; }
+}
+function gatewayEstablished() {
+    try { return Gateway.isConnected() && Gateway.getSocket()?.connectionState === connectionStates?.SESSION_ESTABLISHED; }
+    catch { return false; }
+}
 function read(): Snapshot {
     try {
         const account = UserStore.getCurrentUser()?.id ?? null;
         const nativeIdle = typeof Idle.isIdle() === "boolean" ? Idle.isIdle() : null;
-        return { account, connected: connectionFresh && Gateway.isConnected() && Gateway.getSocket()?.connectionState === connectionStates?.SESSION_ESTABLISHED, capable: statusHooks, nativeIdleHookReady: nativeIdleHook, configured: status(Configured.getSetting()), effective: status(SelfPresence.getStatus()), aggregate: account ? status(AggregatePresence.getStatus(account, null, "unknown")) : "unknown", nativeIdle, nativeIdleAttributed: nativeIdle === true && nativeIdleAttributed, activity, display, camera: cameraSnapshot(pwCamera, localCamera, Date.now(), cameraContinuity) };
+        return { account, connected: connectionFresh && gatewayEstablished(), capable: statusHooks, nativeIdleHookReady: nativeIdleHook, configured: status(Configured.getSetting()), effective: status(SelfPresence.getStatus()), aggregate: account ? status(AggregatePresence.getStatus(account, null, "unknown")) : "unknown", nativeIdle, nativeIdleAttributed: nativeIdle === true && nativeIdleAttributed, activity, display, camera: cameraSnapshot(pwCamera, localCamera, Date.now(), cameraContinuity) };
     } catch { return { account: null, connected: false, capable: false, nativeIdleHookReady: false, configured: "unknown", effective: "unknown", aggregate: "unknown", nativeIdle: null, nativeIdleAttributed: false, activity, display, camera: UNKNOWN("Partial", "client_stores_unavailable") }; }
 }
 function record(event: HistoryEvent) {
@@ -142,6 +158,7 @@ function discoverStatusUpdater() {
     return resolution;
 }
 function validateHooks() {
+    let hookIdentityChanged = false;
     try {
         if (!manualHook) {
             const id = findModuleId(/let\{status:\w+,currentStatus:\w+,description:/);
@@ -158,7 +175,15 @@ function validateHooks() {
         if (configuredSignature === null && currentSignature !== null) configuredSignature = currentSignature;
         const signatureReady = currentSignature !== null;
         statusHooks = connectionStates?.SESSION_ESTABLISHED !== undefined && manualHook && typeof action === "function" && action.toString().includes(".statusAction(") && selectedUpdater !== null && updaterReadiness === "ready" && Number.isFinite(delay) && UserSettingsProtoStore.hasLoaded(1) && signatureReady && !conflict;
+        if (statusHooks) {
+            if (requiredHookIdentity && (requiredHookIdentity.action !== action || requiredHookIdentity.connectionStates !== connectionStates)) {
+                provenance.clear(); saveState = "unavailable";
+                engine?.boundary("required_status_hook_identity_changed");
+                requiredHookIdentity = null; statusHooks = false; hookIdentityChanged = true;
+            } else requiredHookIdentity = { action, connectionStates };
+        }
         patchError = conflict ? "conflicting_status_plugin_enabled" : !signatureReady ? configuredSignatureHealth : updaterReadiness !== "ready" ? `status_updater_${updaterReadiness}` : !statusHooks ? "required_status_hooks_unavailable" : settings.store.idle && !nativeIdleHook ? "native_idle_hook_not_ready" : "none";
+        if (hookIdentityChanged) patchError = "required_status_hook_identity_changed";
     } catch { statusHooks = false; patchError = "required_status_hooks_unavailable"; }
 }
 async function write(token: WriteToken, guard: () => boolean) {
@@ -182,10 +207,11 @@ function statusUpdate(event: any) {
     const { hasStatus } = parsed;
     const { hasDuration } = parsed;
     if (!hasStatus && !hasDuration) return;
-    const token = provenance.take(proto);
+    const token = provenance.peek(proto);
     const ownSaveEcho = provenance.takeSaveAck(proto);
     if (token) statusWriteTrace.update(token, "locally_applied", "locally_applied", Date.now());
     const nextSignature = currentConfiguredSignature();
+    if (token) engine?.captureLocalApplication(token, { account: UserStore.getCurrentUser()?.id ?? "", signature: nextSignature ?? configuredSignatureFromProto(proto) ?? "", updater, gatewaySession: currentGatewaySession() });
     const changed = configuredSignature !== null && nextSignature !== null && configuredSignature !== nextSignature;
     configuredSignature = nextSignature;
     const expected = expectedManualStatus;
@@ -203,18 +229,89 @@ function statusUpdate(event: any) {
         engine?.external(event.local === false ? "external" : "unknown");
     }
     if (token && !saveHooks) { saveState = "unavailable"; engine?.saveOutcome(token, "unavailable", "save_lifecycle_hooks_unavailable"); }
-    queueMicrotask(() => engine?.sample(token || ownSaveEcho ? "plugin" : event.local === false ? "external" : "unknown", token));
+    queueMicrotask(() => {
+        engine?.sample(token || ownSaveEcho ? "plugin" : event.local === false ? "external" : "unknown", token);
+        if (token) provenance.take(proto);
+        tryConnectionRevalidation();
+    });
+}
+function tryConnectionRevalidation() {
+    const attempt = pendingRevalidation;
+    if (!attempt || !pluginActive || !engine || attempt.generation !== connectionGeneration || !engine.connectionPhase.startsWith("revalidating_")) return;
+    let loaded = false;
+    try { loaded = UserSettingsProtoStore.hasLoaded(1); } catch { /* Wait for settings readiness. */ }
+    if (!loaded) return;
+    validateHooks();
+    const evidence = {
+        kind: attempt.kind,
+        account: UserStore.getCurrentUser()?.id ?? null,
+        signature: currentConfiguredSignature(),
+        updater: updaterReadiness === "ready" ? updater : null,
+        gatewaySession: currentGatewaySession(),
+        serverSignature: attempt.serverSignature,
+        serverAccount: attempt.serverAccount,
+        serverSession: attempt.serverSession
+    } as const;
+    engine.completeConnectionRevalidation(attempt.sequence, evidence);
+    if (engine.connectionPhase === "connected") pendingRevalidation = null;
+}
+function connectionInterrupted(reason: "connection_closed" | "connection_interrupted" | "connection_or_capability_uncertain") {
+    if (transportInterrupted) {
+        if (reason === "connection_closed") engine?.connectionInterrupted(reason);
+        return;
+    }
+    transportInterrupted = true;
+    connectionGeneration++;
+    pendingRevalidation = null;
+    connectionFresh = false;
+    nativeIdleAttributed = false;
+    nativeIdlePendingUntil = 0;
+    activityDetector.connectionBoundary(Date.now());
+    engine?.connectionInterrupted(reason);
+    provenance.retainOnly(engine?.recoverableToken);
+    nativeIdleReconcile?.();
+    queueMicrotask(() => engine?.sample());
+}
+function connectionReady(kind: "resumed" | "fresh", event?: any) {
+    const socketSession = currentGatewaySession();
+    if (!transportInterrupted && connectionFresh && lastReadyKind === kind && lastReadySession !== null && lastReadySession === socketSession) return;
+    connectionGeneration++;
+    transportInterrupted = false;
+    connectionFresh = true;
+    lastReadyKind = kind;
+    lastReadySession = socketSession;
+    nativeIdleAttributed = false;
+    nativeIdlePendingUntil = 0;
+    activityDetector.connectionBoundary(Date.now());
+    const sequence = engine?.beginConnectionRevalidation(kind);
+    provenance.retainOnly(engine?.recoverableToken);
+    pendingRevalidation = sequence === undefined ? null : {
+        sequence,
+        generation: connectionGeneration,
+        kind,
+        serverSignature: kind === "fresh" ? configuredSignatureFromProto(event?.userSettingsProto) : null,
+        serverAccount: kind === "fresh" && typeof event?.user?.id === "string" ? event.user.id : null,
+        serverSession: kind === "fresh" && typeof event?.sessionId === "string" ? event.sessionId : null
+    };
+    nativeIdleReconcile?.();
+    queueMicrotask(tryConnectionRevalidation);
 }
 async function poll() {
     if (polling || !engine?.running) return;
+    if (!gatewayEstablished()) connectionInterrupted("connection_or_capability_uncertain");
     polling = true;
     const epoch = lifecycle;
+    const connectionEpoch = connectionGeneration;
     try {
         validateHooks();
         void persistPending();
         await Native.lease(true);
         const [detectors, camera] = await Promise.all([Native.detectorSnapshot(), Native.pipeWireSnapshot()]);
-        if (epoch !== lifecycle || !engine?.running) return;
+        if (epoch !== lifecycle || connectionEpoch !== connectionGeneration || !engine?.running) return;
+        // A poll begun during an outage is still useful for desktop input. If
+        // it discovers the disconnect itself, fence later polls but consume
+        // this independently sampled helper snapshot.
+        if (!gatewayEstablished()) connectionInterrupted("connection_or_capability_uncertain");
         const sampledAt = Date.now();
         helperSnapshotSequence = Number.isInteger(detectors?.sequence) ? detectors.sequence : null;
         helperSnapshotAgeMs = typeof detectors?.at === "number" && Number.isFinite(detectors.at) ? Math.max(0, sampledAt - detectors.at) : null;
@@ -230,8 +327,9 @@ async function poll() {
         tracks.prune();
         localCamera = !cameraHook || !cameraContinuity ? UNKNOWN("Vesktop", "camera_hook_or_continuity_unavailable", Date.now()) : { value: tracks.live ? "active" : tracks.size ? "unknown" : "inactive", at: Date.now(), scope: "Vesktop observed camera acquisitions", reason: tracks.size ? "camera_track_live_muted_or_disabled" : "no_observed_live_camera_track" };
         engine.sample();
+        tryConnectionRevalidation();
         const s = read();
-        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, activityReason: activity.reason, activityValue: activity.value, activityIdleMs, idleRemainingMs: idleQualificationRemainingMs, activitySampleAgeMs, activityContinuityReason, helperSnapshotSequence, helperSnapshotAgeMs, helperSnapshotHealth, helperLeaseHealthy: detectors?.helperLeaseHealthy === true, pendingWritePhase: engine?.pendingPhase, pausedRules: engine?.pausedDetails, configuredSignatureHealth, nativeIdleAttributed: s.nativeIdleAttributed, saveState, saveHooks, statusHooks, nativeIdleHook, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, updaterReadiness, updaterType, lastWrite: statusWriteTrace.lastWrite, storageHealth: persistenceHealth.summary }));
+        await persistenceHealth.diagnostics(() => Native.diagnostics({ commit: BUILD_INFO.commit, enabled: true, idle: settings.store.idle, camera: settings.store.camera, owned: !!engine?.ownership, ownershipPhase: engine?.ownershipPhase, ownershipTransition: engine?.ownershipTransition, ownershipReason: engine?.ownershipReason, ownershipTransitionAt: engine?.ownershipTransitionAt, connectionPhase: engine?.connectionPhase, recoveryBlocker: engine?.recoveryReason, configured: s.configured, effective: s.effective, aggregate: s.aggregate, decision: engine?.latestDecision, mode: mode(), displayReason: display.reason, activityReason: activity.reason, activityValue: activity.value, activityIdleMs, idleRemainingMs: idleQualificationRemainingMs, activitySampleAgeMs, activityContinuityReason, helperSnapshotSequence, helperSnapshotAgeMs, helperSnapshotHealth, helperLeaseHealthy: detectors?.helperLeaseHealthy === true, pendingWritePhase: engine?.pendingPhase, pausedRules: engine?.pausedDetails, configuredSignatureHealth, nativeIdleAttributed: s.nativeIdleAttributed, saveState, saveHooks, statusHooks, nativeIdleHook, cameraHook, panelMounted: changes.size > 0, voiceConnected: !!Voice.getChannelId(), localCameraLive: tracks.size > 0, patchError, updaterReadiness, updaterType, lastWrite: statusWriteTrace.lastWrite, storageHealth: persistenceHealth.summary }));
         notify();
     } catch { if (epoch === lifecycle) { display = UNKNOWN("GNOME", "native_poll_failed"); activity = UNKNOWN("GNOME system-wide input", "native_poll_failed", Date.now()); pwCamera = UNKNOWN("PipeWire", "native_poll_failed"); helperSnapshotHealth = "native_poll_failed"; helperSnapshotSequence = null; helperSnapshotAgeMs = null; activityIdleMs = null; activitySampleAgeMs = null; activityContinuityReason = "native_poll_failed"; idleQualificationRemainingMs = null; engine?.sample(); } }
     finally { polling = false; }
@@ -255,6 +353,7 @@ function Panel() {
     return <div style={{ padding: 16, maxHeight: "70vh", overflow: "auto" }}>
         <Forms.FormTitle>PresenceGuard — {mode()}</Forms.FormTitle>
         <Forms.FormText>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Forms.FormText>
+        <Forms.FormText>Connection: {engine?.connectionPhase ?? "starting"}; ownership: {engine?.ownershipPhase ?? "none"}; last ownership transition: {engine?.ownershipTransition ?? "none"} ({engine?.ownershipReason ?? "unknown"}){engine?.ownershipTransitionAt ? ` at ${new Date(engine.ownershipTransitionAt).toLocaleTimeString()}` : ""}; recovery blocked by: {engine?.recoveryReason ?? "none"}.</Forms.FormText>
         <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Status updater: {updaterReadiness} (type {updaterType ?? "unknown"}); status hooks: {statusHooks ? "ready" : "unavailable"}; native Idle: {nativeIdleHook ? "ready" : "unavailable"}; save lifecycle: {saveHooks ? "tracked" : "unavailable"} ({patchError}).</Forms.FormText>
         <Forms.FormText>Desktop activity: {s.activity.value} — {s.activity.reason}. Idle counter: {activityIdleMs === null ? "unavailable/input sample pending" : `${Math.max(0, Math.round(activityIdleMs / 1000))}s`}; qualification remaining: {idleQualificationRemainingMs === null ? "unavailable" : `${Math.ceil(idleQualificationRemainingMs / 1000)}s`}; sample age: {activitySampleAgeMs === null ? "unavailable" : `${activitySampleAgeMs}ms`}; continuity: {activityContinuityReason ?? "continuous"}; helper: {helperSnapshotHealth} (sequence {helperSnapshotSequence ?? "unavailable"}). Configured-status signature: {configuredSignatureHealth}. Native Idle: {String(s.nativeIdle)} (attributed: {String(s.nativeIdleAttributed)}). Configured-status save evidence: {saveState}; pending write: {engine?.pendingPhase ?? "none"}.</Forms.FormText>
         {engine?.pausedDetails.map(item => <Forms.FormText key={item.rule}>Paused {item.rule}: {item.reason} at {new Date(item.at).toLocaleString()}</Forms.FormText>)}
@@ -275,7 +374,7 @@ function Panel() {
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
         <Forms.FormText>{message}</Forms.FormText>
-        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}{e.saveState ? ` · save ${e.saveState}` : ""}{e.repeatCount && e.repeatCount > 1 ? ` · ${e.repeatCount} repeats (${new Date(e.firstAt ?? e.at).toLocaleTimeString()}–${new Date(e.lastAt ?? e.at).toLocaleTimeString()})` : ""}</Forms.FormText><Forms.FormText>Activity {e.activity?.value ?? "unavailable"}: {e.activity?.reason ?? "legacy history"} · native Idle attributed {String(e.nativeIdleAttributed ?? false)} · Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
+        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}{e.ownershipPhase ? ` · ownership ${e.ownershipPhase}` : ""}{e.saveState ? ` · save ${e.saveState}` : ""}{e.repeatCount && e.repeatCount > 1 ? ` · ${e.repeatCount} repeats (${new Date(e.firstAt ?? e.at).toLocaleTimeString()}–${new Date(e.lastAt ?? e.at).toLocaleTimeString()})` : ""}</Forms.FormText><Forms.FormText>Activity {e.activity?.value ?? "unavailable"}: {e.activity?.reason ?? "legacy history"} · native Idle attributed {String(e.nativeIdleAttributed ?? false)} · Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
     </div>;
 }
 function openPanel() { openModal(props => <Modal {...props} title="PresenceGuard"><Panel /></Modal>); }
@@ -324,9 +423,11 @@ export default definePlugin({
         if (outcome.state === "succeeded") {
             saveState = "succeeded";
             for (const token of outcome.tokens) { statusWriteTrace.update(token, "save_succeeded", "save_confirmed", Date.now()); engine?.saveOutcome(token, "succeeded", "correlated_configured_status_save_acknowledgement"); }
+            queueMicrotask(tryConnectionRevalidation);
         } else if (outcome.state === "unavailable") {
             saveState = "unavailable";
             for (const token of outcome.tokens) { statusWriteTrace.update(token, "unavailable", "unavailable", Date.now(), "save_acknowledgement_unavailable"); engine?.saveOutcome(token, "unavailable", "configured_status_save_acknowledgement_unmatched"); }
+            queueMicrotask(tryConnectionRevalidation);
         }
     },
     saveUnavailable(owner: object, context: any) { return this.saveSucceeded(owner, context, null); },
@@ -342,6 +443,7 @@ export default definePlugin({
         }
         saveState = "failed";
         for (const token of tokens) { statusWriteTrace.update(token, "failed", "failed", Date.now(), "save_failed"); engine?.saveOutcome(token, "failed", "configured_status_save_failed_terminal"); }
+        queueMicrotask(tryConnectionRevalidation);
     },
     nativeIdleProviderReady(reconcile: () => void) {
         if (!engine?.running) return;
@@ -385,7 +487,10 @@ export default definePlugin({
         helperSnapshotSequence = null; helperSnapshotAgeMs = null; helperSnapshotHealth = "starting"; activityIdleMs = null; activitySampleAgeMs = null; activityContinuityReason = null; idleQualificationRemainingMs = null;
         activityDetector.reset(); displayDetector.reset(); pipewireDetector.reset();
         validateHooks();
-        try { connectionFresh = Gateway.isConnected() && !!UserStore.getCurrentUser() && UserSettingsProtoStore.hasLoaded(1); } catch { connectionFresh = false; }
+        connectionGeneration++;
+        transportInterrupted = false;
+        lastReadyKind = null; lastReadySession = null; pendingRevalidation = null;
+        try { connectionFresh = gatewayEstablished() && !!UserStore.getCurrentUser() && UserSettingsProtoStore.hasLoaded(1); } catch { connectionFresh = false; }
         engine = new PresenceEngine({ read, write, record }, { now: Date.now, set: (fn, ms) => setTimeout(fn, ms), clear: id => clearTimeout(id as ReturnType<typeof setTimeout>) }, options());
         engine.boundary("plugin_start_new_detector_epoch");
         subscribe("USER_SETTINGS_PROTO_UPDATE", statusUpdate);
@@ -402,8 +507,17 @@ export default definePlugin({
             queueMicrotask(() => engine?.sample("native/client"));
         });
         for (const event of ["AFK", "SESSIONS_REPLACE"]) subscribe(event, () => queueMicrotask(() => engine?.sample("unknown")));
-        for (const event of ["CONNECTION_CLOSED", "LOGOUT", "START_SESSION", "ACCOUNT_SWITCH_START"]) subscribe(event, () => { connectionFresh = false; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(true); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); engine?.boundary(event.toLowerCase()); provenance.clear(); });
-        for (const event of ["CONNECTION_OPEN", "CONNECTION_RESUMED"]) subscribe(event, () => { connectionFresh = true; nativeIdleAttributed = false; nativeIdlePendingUntil = 0; activityDetector.reset(true); activity = UNKNOWN("GNOME system-wide input", "reconnect_new_activity_epoch", Date.now()); provenance.clear(); saveState = "unavailable"; engine?.boundary("connection_open_new_epoch"); nativeIdleReconcile?.(); queueMicrotask(() => engine?.sample()); });
+        subscribe("CONNECTION_INTERRUPTED", () => connectionInterrupted("connection_interrupted"));
+        subscribe("CONNECTION_CLOSED", () => connectionInterrupted("connection_closed"));
+        for (const event of ["LOGOUT", "ACCOUNT_SWITCH_START"]) subscribe(event, () => {
+            connectionGeneration++;
+            transportInterrupted = true; connectionFresh = false; pendingRevalidation = null;
+            nativeIdleAttributed = false; nativeIdlePendingUntil = 0;
+            activityDetector.reset(true); activity = UNKNOWN("GNOME system-wide input", "account_boundary_new_activity_epoch", Date.now());
+            engine?.boundary(event.toLowerCase()); provenance.clear(); saveState = "unavailable";
+        });
+        subscribe("CONNECTION_OPEN", event => { connectionReady("fresh", event); queueMicrotask(() => engine?.sample()); });
+        subscribe("CONNECTION_RESUMED", event => { connectionReady("resumed", event); queueMicrotask(() => engine?.sample()); });
         const epoch = lifecycle;
         void loadHistory().then(notify, notify);
         void Native.consumeWelcome().then(show => { if (show && epoch === lifecycle) openPanel(); });
@@ -419,6 +533,6 @@ export default definePlugin({
         nativeIdleHook = false; nativeIdleReconcile = undefined; nativeIdleAttributed = false; nativeIdlePendingUntil = 0;
         display = UNKNOWN("GNOME"); activity = UNKNOWN("GNOME system-wide input"); pwCamera = UNKNOWN("PipeWire"); localCamera = UNKNOWN("Vesktop");
         void Native.lease(false);
-        void persistenceHealth.diagnostics(() => Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped", updaterReadiness, updaterType, lastWrite: statusWriteTrace.lastWrite, storageHealth: persistenceHealth.summary }));
+        void persistenceHealth.diagnostics(() => Native.diagnostics({ enabled: false, commit: BUILD_INFO.commit, mode: "Stopped", connectionPhase: engine?.connectionPhase, ownershipPhase: engine?.ownershipPhase, ownershipTransition: engine?.ownershipTransition, ownershipReason: engine?.ownershipReason, ownershipTransitionAt: engine?.ownershipTransitionAt, recoveryBlocker: engine?.recoveryReason, updaterReadiness, updaterType, lastWrite: statusWriteTrace.lastWrite, storageHealth: persistenceHealth.summary }));
     }
 });

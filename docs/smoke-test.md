@@ -40,15 +40,19 @@ are separate evidence.
 8. Keep the existing Webcam DND behavior: use a camera normally in Vesktop or a
    supported PipeWire application, verify positive capture evidence, then stop
    capture normally. Confirm the previous camera-owned transitions still work.
-9. Restart or reconnect, disable the plugin, or make detector data unavailable.
-   Ownership and pending writes must be discarded at restart/reconnect/disable;
-   an already owned status may remain local while activity is Unknown, but no
-   return may be inferred from stale data. After suspend/resume, reconnect,
-   provider replacement or a counter reset, a high counter must requalify through
-   five fresh continuous minutes before Idle; one genuine input remains immediate.
-   Existing configured Idle is never adopted. If the native Idle hook is
-   unsupported, Idle automation must remain unavailable and the panel must report
-   that state.
+9. Restart, naturally reconnect, disable the plugin, or make detector data
+   unavailable. A restart/disable discards ownership and pending work without
+   changing configured status. A same-process gateway interruption suspends only
+   a locally applied plugin-owned Idle claim; after resume or fresh READY, confirm
+   the account, updater, session, configured signature and correlated save before
+   activity can restore Online. Matching settings alone cannot restore ownership.
+   Manual interventions, account changes, unsupported hooks and updater identity
+   loss revoke the claim. The panel reports connection/ownership phase and any
+   recovery blocker. Fresh detector continuity is required after reconnect,
+   suspend/resume, provider replacement or counter reset before a new Idle write;
+   a genuine one-shot input remains immediately recognizable. Existing configured
+   Idle is never adopted. If the native Idle hook is unsupported, Idle automation
+   must remain unavailable and the panel must report that state.
 10. Use clear/export and the labelled fixture simulation. Export remains local;
     simulation must not create real status writes or ownership.
 

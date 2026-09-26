@@ -7,7 +7,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { WriteCancelledBeforeMutation } from "./mutator";
 import { classifyWriteError } from "./statusUpdater";
-import { type Adapter, type Clock, fresh, type HistoryEvent, type Options, type Rule, type Snapshot, type Source, type Status, type WriteToken } from "./types";
+import { type Adapter, type Clock, fresh, type HistoryEvent, type LocalApplicationReceipt, type Options, type ReconnectionEvidence, type Rule, type Snapshot, type Source, type Status, type WriteToken } from "./types";
+
+interface Ownership {
+    status: Status;
+    rule: Rule;
+    token: WriteToken;
+    receipt?: LocalApplicationReceipt;
+    saveState: HistoryEvent["saveState"];
+    revalidated: boolean;
+    interventionEpoch: number;
+}
 
 export class PresenceEngine {
     private generation = 0;
@@ -17,7 +27,9 @@ export class PresenceEngine {
     private stopped = false;
     private pending: WriteToken | null = null;
     private previous: Snapshot | null = null;
-    private owner: { status: Status; rule: Rule; token: WriteToken } | null = null;
+    private owner: Ownership | null = null;
+    private localReceipts = new WeakMap<WriteToken, LocalApplicationReceipt>();
+    private writeSaveState = new WeakMap<WriteToken, HistoryEvent["saveState"]>();
     private latestAppliedWrite: WriteToken | null = null;
     private terminalSaveTokens = new WeakSet<WriteToken>();
     private paused = new Map<Rule, { reason: string; at: number }>();
@@ -27,10 +39,26 @@ export class PresenceEngine {
     private detectorEpoch = -Infinity;
     private manualPending: Status | null = null;
     private confirmedAccount: string | null = null;
+    private interventionEpoch = 0;
+    private revalidationSequence = 0;
+    private connectionState: "connected" | "interrupted" | "closed" | "revalidating" = "connected";
+    private revalidationKind: "resumed" | "fresh" | null = null;
+    private capturedApplication: { token: WriteToken; receipt: LocalApplicationReceipt } | null = null;
+    private recoveryBlocker: string | null = null;
+    private lastOwnershipTransition: string | null = null;
+    private lastOwnershipReason: string | null = null;
+    private lastOwnershipTransitionAt: number | null = null;
     latestDecision = "starting";
     constructor(private adapter: Adapter, private clock: Clock, private options: Options) {}
 
     get ownership() { return this.owner ? { status: this.owner.status, rule: this.owner.rule } : null; }
+    get ownershipPhase(): "none" | "active" | "suspended" { return this.owner ? this.owner.revalidated ? "active" : "suspended" : "none"; }
+    get connectionPhase() { return this.connectionState === "revalidating" ? `revalidating_${this.revalidationKind ?? "unknown"}` : this.connectionState; }
+    get recoveryReason() { return this.recoveryBlocker; }
+    get ownershipTransition() { return this.lastOwnershipTransition; }
+    get ownershipReason() { return this.lastOwnershipReason; }
+    get ownershipTransitionAt() { return this.lastOwnershipTransitionAt; }
+    get recoverableToken() { return this.owner?.rule === "idle" ? this.owner.token : undefined; }
     get pausedRules() { return [...this.paused.keys()]; }
     get pausedDetails() { return [...this.paused].map(([rule, detail]) => ({ rule, ...detail })); }
     get pendingPhase() { return this.timer !== undefined ? "debounce" : this.pending || this.busy ? "updater_loading_or_local_apply" : "idle"; }
@@ -44,7 +72,7 @@ export class PresenceEngine {
 
     private emit(kind: HistoryEvent["kind"], reason: string, source: Source, s: Snapshot, previous = this.previous?.effective ?? "unknown", target = s.effective, saveState?: HistoryEvent["saveState"], importance?: HistoryEvent["importance"]) {
         if (!this.options.observe) return;
-        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: importance ?? (kind === "observation" || kind === "simulation" || kind === "skip" ? "detector" : "control"), display: { ...s.display }, camera: { ...s.camera } });
+        this.adapter.record({ at: this.clock.now(), kind, source, previous, status: target, configured: s.configured, aggregate: s.aggregate, reason, owned: !!this.owner, ownershipPhase: this.ownershipPhase, nativeIdleAttributed: s.nativeIdleAttributed, activity: { ...s.activity }, saveState, importance: importance ?? (kind === "observation" || kind === "simulation" || kind === "skip" ? "detector" : "control"), display: { ...s.display }, camera: { ...s.camera } });
     }
 
     private pause(rule: Rule, reason: string) {
@@ -57,18 +85,205 @@ export class PresenceEngine {
         this.timer = undefined;
         this.scheduledRule = null;
         this.pending = null;
+        this.localReceipts = new WeakMap();
+        this.capturedApplication = null;
         if (!keepOwner) this.owner = null;
         if (!keepOwner) this.latestAppliedWrite = null;
     }
 
+    private cancelMutations(keepIdleOwner: boolean) {
+        this.generation++;
+        if (this.timer !== undefined) this.clock.clear(this.timer);
+        this.timer = undefined;
+        this.scheduledRule = null;
+        this.pending = null;
+        this.localReceipts = new WeakMap();
+        if (keepIdleOwner && this.owner?.rule === "idle") this.owner.revalidated = false;
+        else { this.owner = null; this.latestAppliedWrite = null; }
+    }
+
+    private ownershipChanged(reason: string) {
+        const rule = this.owner?.rule ?? this.capturedApplication?.token.rule;
+        this.lastOwnershipTransition = reason.startsWith("acquired:") ? rule === "camera" ? "camera_acquired" : "idle_acquired"
+            : reason.startsWith("suspended:") ? "idle_suspended"
+                : reason.startsWith("revalidated:") ? "idle_revalidated"
+                    : rule === "camera" ? "camera_revoked" : "idle_revoked";
+        this.lastOwnershipReason = reason.startsWith("acquired:") ? "plugin_status_locally_applied"
+            : reason.includes("manual") ? "manual_selection"
+            : reason.includes("updater") ? "updater_identity_changed"
+                : reason.includes("server_") ? "server_settings_mismatch"
+                        : reason.includes("account") ? "account_changed"
+                            : reason.includes("gateway_session") ? "gateway_session_changed"
+                                : reason.includes("superseded") ? "plugin_status_write_superseded"
+                                : reason.startsWith("revalidated:") ? "connection_revalidated"
+                                    : reason.includes("save_confirmed") || reason.includes("save_and") ? "configured_idle_save_confirmed"
+                                        : reason.startsWith("suspended:") ? "gateway_interruption"
+                                            : reason.includes("external") || reason.includes("intervention") ? "external_status_intervention"
+                                                : reason.includes("connection") ? "connection_changed"
+                                                    : reason.includes("configured_status") ? "configured_status_changed" : "ownership_released";
+        this.lastOwnershipTransitionAt = this.clock.now();
+    }
+
+    captureLocalApplication(token: WriteToken, receipt: LocalApplicationReceipt) {
+        const s = this.adapter.read();
+        if (token !== this.pending || token.generation !== this.generation || !s.connected || !s.capable || !s.account || s.configured !== token.target) return false;
+        if (token.target === "idle") {
+            if (s.account !== receipt.account || !receipt.signature || !receipt.updater) return false;
+            this.localReceipts.set(token, receipt);
+        }
+        this.capturedApplication = { token, receipt };
+        // A newer locally applied Online or DND operation supersedes an older
+        // Idle claim synchronously, before the deferred engine sample runs.
+        if (this.owner && this.owner.token !== token && token.target !== this.owner.status) {
+            this.ownershipChanged("revoked:superseded_by_newer_plugin_status_write");
+            this.owner = null;
+            this.latestAppliedWrite = token;
+        }
+        return true;
+    }
+
+    private captureAppliedIdleClaim() {
+        const captured = this.capturedApplication;
+        if (!captured || captured.token !== this.pending || captured.token.generation !== this.generation || captured.token.target !== "idle") return;
+        const s = this.adapter.read();
+        const { receipt } = captured;
+        if (s.account !== receipt.account || s.configured !== "idle") return;
+        this.owner = { status: "idle", rule: "idle", token: captured.token, receipt, saveState: this.writeSaveState.get(captured.token) ?? "pending", revalidated: true, interventionEpoch: this.interventionEpoch };
+        this.latestAppliedWrite = this.terminalSaveTokens.has(captured.token) ? null : captured.token;
+        this.ownershipChanged("acquired:idle_configured_status_locally_applied_before_deferred_sample");
+    }
+
     boundary(reason: string) {
+        if (this.owner) this.ownershipChanged(`revoked:${reason}`);
         this.invalidate();
+        if (reason === "logout" || reason === "account_changed") this.interventionEpoch++;
         if (reason === "logout") { this.manualPending = null; this.confirmedAccount = null; }
         this.detectorEpoch = this.clock.now();
         this.emit("boundary", reason, "unknown", this.adapter.read());
     }
 
+    /** A network boundary cancels writes while retaining only confirmed plugin-owned Idle. */
+    connectionInterrupted(reason: string) {
+        if (this.connectionState === "closed") return;
+        if (this.connectionState === "interrupted" && reason !== "connection_closed") return;
+        if (this.connectionState === "interrupted" && reason === "connection_closed") {
+            this.connectionState = "closed";
+            this.emit("boundary", "connection_closed_after_interruption", "unknown", this.adapter.read(), undefined, undefined, undefined, "control");
+            return;
+        }
+        this.captureAppliedIdleClaim();
+        const retainIdle = this.owner?.rule === "idle" && !!this.owner.receipt;
+        if (retainIdle) this.ownershipChanged(`suspended:${reason}`);
+        else if (this.owner) this.ownershipChanged(`revoked:${reason}`);
+        this.cancelMutations(retainIdle);
+        this.capturedApplication = null;
+        this.connectionState = reason === "connection_closed" ? "closed" : "interrupted";
+        this.detectorEpoch = this.clock.now();
+        this.recoveryBlocker = retainIdle ? "awaiting_connection_revalidation" : null;
+        this.revalidationSequence++;
+        this.revalidationKind = null;
+        this.resetDecision();
+        this.emit("boundary", retainIdle ? `idle_ownership_suspended:${reason}` : reason, "unknown", this.adapter.read(), undefined, undefined, undefined, "control");
+    }
+
+    beginConnectionRevalidation(kind: "resumed" | "fresh") {
+        if (this.connectionState === "revalidating" && this.revalidationKind === kind) return this.revalidationSequence;
+        this.captureAppliedIdleClaim();
+        if (this.connectionState !== "revalidating") {
+            const retainIdle = this.owner?.rule === "idle" && !!this.owner.receipt;
+            if (retainIdle) this.ownershipChanged(`suspended:connection_${kind}`);
+            else if (this.owner) this.ownershipChanged(`revoked:connection_${kind}`);
+            this.cancelMutations(retainIdle);
+            this.connectionState = "revalidating";
+        }
+        this.revalidationKind = kind;
+        this.revalidationSequence++;
+        this.detectorEpoch = this.clock.now();
+        this.recoveryBlocker = "awaiting_status_settings_revalidation";
+        this.resetDecision();
+        this.emit("boundary", `connection_${kind}_revalidating`, "unknown", this.adapter.read(), undefined, undefined, undefined, "control");
+        return this.revalidationSequence;
+    }
+
+    completeConnectionRevalidation(sequence: number, evidence: ReconnectionEvidence) {
+        if (sequence !== this.revalidationSequence || this.connectionState !== "revalidating") return false;
+        const s = this.adapter.read();
+        const hold = (reason: string) => { this.recoveryBlocker = reason; this.latestDecision = reason; return false; };
+        if (!s.connected || !s.capable) return hold("connection_or_status_hooks_unavailable");
+        if (!evidence.account || !s.account) return hold("current_account_unavailable");
+        if (this.owner) {
+            const { receipt } = this.owner;
+            if (!receipt) return hold("owned_idle_receipt_unavailable");
+            if (evidence.account !== receipt.account || s.account !== receipt.account) {
+                this.pause("idle", "reconnection_account_changed");
+                this.ownershipChanged("revoked:reconnection_account_changed");
+                this.invalidate(); this.connectionState = "connected"; this.revalidationKind = null; this.recoveryBlocker = "reconnection_account_changed";
+                this.emit("boundary", "idle_ownership_revoked_account_changed", "unknown", s, undefined, undefined, undefined, "control");
+                return false;
+            }
+            if (evidence.kind === "fresh" && !evidence.serverAccount) return hold("server_account_not_settled");
+            if (evidence.kind === "fresh" && evidence.serverAccount !== receipt.account) {
+                this.pause("idle", "server_account_changed_while_disconnected");
+                this.ownershipChanged("revoked:server_account_changed_while_disconnected");
+                this.invalidate(); this.connectionState = "connected"; this.revalidationKind = null; this.recoveryBlocker = "server_account_changed_while_disconnected";
+                this.emit("boundary", "idle_ownership_revoked_server_account_changed", "unknown", s, undefined, undefined, undefined, "control");
+                return false;
+            }
+            if (!evidence.updater) return hold("status_updater_identity_unavailable");
+            if (evidence.updater !== receipt.updater) {
+                this.pause("idle", "status_updater_identity_changed_during_reconnect");
+                this.ownershipChanged("revoked:status_updater_identity_changed_during_reconnect");
+                this.invalidate(); this.connectionState = "connected"; this.revalidationKind = null; this.recoveryBlocker = "status_updater_identity_changed_during_reconnect";
+                this.emit("boundary", "idle_ownership_revoked_updater_changed", "unknown", s, undefined, undefined, undefined, "control");
+                return false;
+            }
+            if (evidence.signature === null) return hold("configured_status_signature_unavailable");
+            if (evidence.kind === "resumed" && (!receipt.gatewaySession || evidence.gatewaySession !== receipt.gatewaySession)) {
+                this.pause("idle", "gateway_session_changed_during_resume");
+                this.ownershipChanged("revoked:gateway_session_changed_during_resume");
+                this.invalidate(); this.connectionState = "connected"; this.revalidationKind = null; this.recoveryBlocker = "gateway_session_changed_during_resume";
+                this.emit("boundary", "idle_ownership_revoked_gateway_session_changed", "unknown", s, undefined, undefined, undefined, "control");
+                return false;
+            }
+            if (this.interventionEpoch !== this.owner.interventionEpoch) {
+                this.pause("idle", "configured_status_intervention_while_disconnected");
+                this.ownershipChanged("revoked:configured_status_intervention_while_disconnected");
+                this.invalidate(); this.connectionState = "connected"; this.revalidationKind = null; this.recoveryBlocker = "configured_status_intervention_while_disconnected";
+                this.emit("boundary", "idle_ownership_revoked_intervention", "unknown", s, undefined, undefined, undefined, "control");
+                return false;
+            }
+            if (evidence.kind === "fresh" && evidence.serverSignature === null) return hold("server_configured_status_unavailable");
+            if (evidence.kind === "fresh" && (!evidence.serverSession || evidence.gatewaySession !== evidence.serverSession)) return hold("gateway_session_identity_unavailable");
+            if (evidence.kind === "fresh" && evidence.serverSignature !== receipt.signature) {
+                this.pause("idle", "server_configured_status_changed_while_disconnected");
+                this.ownershipChanged("revoked:server_configured_status_changed_while_disconnected");
+                this.invalidate(); this.connectionState = "connected"; this.revalidationKind = null; this.recoveryBlocker = "server_configured_status_changed_while_disconnected";
+                this.emit("boundary", "idle_ownership_revoked_server_status_changed", "unknown", s, undefined, undefined, undefined, "control");
+                return false;
+            }
+            if (evidence.signature !== receipt.signature || s.configured !== "idle") return hold("local_settings_not_settled_to_owned_idle");
+            if (this.owner.saveState === "pending") return hold("owned_idle_save_pending");
+            if (this.owner.saveState !== "succeeded") return hold(`owned_idle_save_${this.owner.saveState ?? "unavailable"}`);
+            this.owner.revalidated = true;
+            this.ownershipChanged("revalidated:configured_idle_and_save_confirmed");
+        } else {
+            if (evidence.kind === "fresh" && evidence.serverAccount !== evidence.account) return hold("server_account_not_settled");
+            if (evidence.kind === "fresh" && (!evidence.serverSession || evidence.gatewaySession !== evidence.serverSession)) return hold("gateway_session_identity_unavailable");
+            if (evidence.signature === null) return hold("configured_status_signature_unavailable");
+            if (evidence.kind === "fresh" && (evidence.serverSignature === null || evidence.serverSignature !== evidence.signature)) return hold("server_and_local_settings_not_settled");
+        }
+        this.connectionState = "connected";
+        this.revalidationKind = null;
+        this.recoveryBlocker = null;
+        this.resetDecision();
+        this.emit("confirmation", "connection_revalidated_status_authority", "plugin", s, undefined, undefined, undefined, "control");
+        this.sample("plugin");
+        return true;
+    }
+
     manual(value: Status) {
+        this.interventionEpoch++;
+        if (this.owner) this.ownershipChanged("revoked:manual_status_selection");
         const affected = [this.owner?.rule, this.pending?.rule, this.scheduledRule].filter((rule): rule is Rule => !!rule);
         this.invalidate();
         this.manualPending = value === "online" ? null : value;
@@ -80,6 +295,8 @@ export class PresenceEngine {
     }
 
     external(source: Source = "unknown") {
+        this.interventionEpoch++;
+        if (this.owner) this.ownershipChanged("revoked:unattributed_configured_status_intervention");
         this.pause("idle", "unattributed_configured_status_intervention");
         this.pause("camera", "unattributed_configured_status_intervention");
         if (this.owner) this.pause(this.owner.rule, "unattributed_configured_status_intervention");
@@ -120,6 +337,8 @@ export class PresenceEngine {
         const failedPendingWrite = this.pending === token;
         const failedOwnedWrite = this.owner?.token === token;
         const failedLatestWrite = this.latestAppliedWrite === token;
+        this.writeSaveState.set(token, state);
+        if (this.owner?.token === token) this.owner.saveState = state;
         if (["succeeded", "failed", "unavailable"].includes(state)) {
             this.terminalSaveTokens.add(token);
             if (this.latestAppliedWrite === token) this.latestAppliedWrite = null;
@@ -150,19 +369,45 @@ export class PresenceEngine {
         // The picker runs before Discord asynchronously loads and applies settings.
         // A non-Online selection blocks acquisition while the old preference is Online.
         if (s.account && this.manualPending !== "unknown" && s.configured === this.manualPending) this.manualPending = null;
-        if (!s.connected || !s.account || !s.capable) {
+        if (!s.connected) {
+            this.connectionInterrupted("connection_or_capability_uncertain");
+            this.previous = s;
+            this.latestDecision = this.connectionState === "revalidating" ? "awaiting_connection_revalidation" : "connection_interrupted";
+            return;
+        }
+        if (!s.account) {
+            this.recoveryBlocker = "current_account_unavailable";
+            this.detectorEpoch = this.clock.now();
+            this.previous = s;
+            return;
+        }
+        if (!s.capable) {
             const becameUncertain = !this.previous || (this.previous.connected && !s.connected) || (this.previous.account && !s.account) || (this.previous.capable && !s.capable);
             if (becameUncertain || this.owner || this.pending || this.timer !== undefined) this.boundary("connection_or_capability_uncertain");
+            this.previous = s;
+            return;
         }
         const ownConfirmation = token !== undefined && token === this.pending && token.generation === this.generation && s.connected && s.capable && s.account && s.configured === token.target;
         if (ownConfirmation) {
+            const receipt = this.localReceipts.get(token);
+            this.localReceipts.delete(token);
+            if (this.capturedApplication?.token === token) this.capturedApplication = null;
             this.latestAppliedWrite = this.terminalSaveTokens.has(token) ? null : token;
-            this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule, token };
+            if (token.target === "idle" && (!receipt || receipt.account !== s.account || receipt.updater === null || !receipt.signature)) {
+                this.owner = null;
+                this.pause("idle", "owned_idle_receipt_unavailable");
+                this.recoveryBlocker = "owned_idle_receipt_unavailable";
+            } else {
+                this.owner = token.target === "online" ? null : { status: token.target, rule: token.rule, token, receipt, saveState: this.writeSaveState.get(token) ?? "pending", revalidated: true, interventionEpoch: this.interventionEpoch };
+                if (token.target !== "online") this.ownershipChanged(`acquired:${token.rule}_configured_status_locally_applied`);
+            }
             this.pending = null;
             this.emit("confirmation", "configured_status_locally_applied_effective_presence_observed_separately", "plugin", s);
-        } else if (this.owner && s.configured !== this.owner.status) {
+        } else if (this.connectionState === "connected" && this.owner && s.configured !== this.owner.status) {
+            this.ownershipChanged("revoked:configured_status_changed_while_plugin_owned");
             this.pause(this.owner.rule, "configured_status_changed_while_plugin_owned");
             this.invalidate();
+            this.recoveryBlocker = "configured_status_changed_while_plugin_owned";
             this.emit("skip", "status_conflict_rule_paused", source, s, undefined, undefined, undefined, "control");
         }
         if (!this.previous || s.configured !== this.previous.configured || s.effective !== this.previous.effective || s.aggregate !== this.previous.aggregate) {
@@ -185,16 +430,18 @@ export class PresenceEngine {
     }
 
     private decide(s: Snapshot, simulation = false): { target?: Status; rule?: Rule; reason: string } {
+        if (this.connectionState !== "connected") return { reason: this.connectionState === "interrupted" ? "connection_interrupted_awaiting_revalidation" : this.recoveryBlocker ?? "connection_revalidation_pending" };
         if (this.manualPending !== null) return { reason: "manual_selection_awaiting_configured_status" };
         if (!this.ready(s)) return { reason: "non_owned_or_uncertain_status" };
         if (this.owner && s.configured !== this.owner.status) return { reason: "owned_configured_status_changed" };
         const camera = simulation || this.options.camera;
         const idle = simulation || this.options.idle;
+        const confirmedIdleReturn = this.owner?.rule === "idle" && fresh(s.activity, this.clock.now()) && s.activity.value === "active";
         if (camera && !this.paused.has("camera")) {
             const cameraEligible = !!this.owner || (s.configured === "online" && s.effective === "online");
             if (cameraEligible) {
-                if (s.camera.at <= this.detectorEpoch) return { reason: "camera_sample_from_previous_epoch" };
-                if (fresh(s.camera, this.clock.now()) && s.camera.value === "active") return { target: "dnd", rule: "camera", reason: "confirmed_camera_capture" };
+                if (s.camera.at <= this.detectorEpoch && !confirmedIdleReturn) return { reason: "camera_sample_from_previous_epoch" };
+                if (s.camera.at > this.detectorEpoch && fresh(s.camera, this.clock.now()) && s.camera.value === "active") return { target: "dnd", rule: "camera", reason: "confirmed_camera_capture" };
                 if (!fresh(s.camera, this.clock.now()) && this.owner?.rule === "camera") return { reason: "camera_unknown_no_release" };
             }
         }

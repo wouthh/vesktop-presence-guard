@@ -104,3 +104,9 @@ export function configuredStatusSignature(value: unknown, expiresAtMs: unknown, 
     if (configured === "unknown" || expires === undefined || created === undefined) return null;
     return JSON.stringify([configured, expires, created]);
 }
+
+export function configuredSignatureFromProto(proto: unknown): string | null {
+    const parsed = parseStatusProto(proto);
+    if (!parsed.hasStatus || parsed.shape === "unsupported") return null;
+    return configuredStatusSignature(parsed.configured, parsed.expiresAtMs, parsed.createdAtMs);
+}
