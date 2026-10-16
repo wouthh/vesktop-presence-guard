@@ -119,8 +119,9 @@ their existing launchers. The panel opens once. Verify the main profile's local
 commit, hooks, detector health, other plugins, and startup errors. These are
 private local diagnostics, never public artifacts.
 
-After an update, verify that each profile kept its previous PresenceGuard enable
-state, rule choices and all unrelated settings. The fixed desktop inactivity
+After an update, verify that the main profile has PresenceGuard enabled (`update`
+always enables it there) with its previous observe/idle/camera choices, and that
+the second profile and all unrelated settings are unchanged. The fixed desktop inactivity
 threshold is 300 seconds. The update path preserves saved choices; it does not
 rewrite full profile settings.
 
