@@ -17,7 +17,7 @@ Mullvad-excluded Flatpak invocation; unexpected launchers are rejected intact.
 
 Before the first installation, the private ledger's `backups` directory must
 contain `main-launcher`, `updater`, and `main-plugins` (the original main Vencord
-settings JSON). Also back up both profiles' state/settings and the Alt launcher.
+settings JSON). Also back up both profiles' state/settings and the second profile's launcher.
 Before modifying executables, record their original numeric Unix modes in
 `backups/executable-modes.json`, with keys `main-launcher` and `updater` (for
 example, 448 represents mode 0700). The baseline authenticates this file and
@@ -113,17 +113,16 @@ guard or broaden a process kill to make installation proceed.
 It pins and hashes the previous retained release, activates
 the validated candidate, verifies its plugin and commit identity, adds the
 process-bound helper to the existing main launcher, and enables main observation
-with both rules off. Alt settings stay unchanged. Relaunch only profiles that were running before the operation, through
+with both rules off. The second profile's settings stay unchanged. Relaunch only profiles that were running before the operation, through
 their existing launchers. The panel opens once. Verify the main profile's local
 `PresenceGuard/diagnostics.json`, `history.json`, and panel; check enabled state,
 commit, hooks, detector health, other plugins, and startup errors. These are
 private local diagnostics, never public artifacts.
 
-For the authorized 0.2.3 managed update, verify Main is enabled with Automatic
-Idle enabled; its fixed desktop inactivity threshold is 300 seconds. Verify the
-Alt PresenceGuard plugin remains disabled. Preserve Main's existing Webcam DND
-choice and all unrelated settings. The update path preserves saved choices; it
-does not rewrite full profile settings.
+After an update, verify that each profile kept its previous PresenceGuard enable
+state, rule choices and all unrelated settings. The fixed desktop inactivity
+threshold is 300 seconds. The update path preserves saved choices; it does not
+rewrite full profile settings.
 
 For later updates, pull/review changes normally, run `pnpm check`, commit them,
 run `prepare`, gracefully close the mapped profiles under the same restart authority,
@@ -157,7 +156,7 @@ must verify that anchor before using the manifest to protect a release from prun
 It restores the original main launcher and private updater with their recorded
 permissions, restores only the
 PresenceGuard settings entry, and disables the helper lease. Unrelated settings,
-Alt configuration and local history remain. Relaunch normally. Repeating a
+second-profile configuration and local history remain. Relaunch normally. Repeating a
 successful rollback is a verified no-op. Later unrelated updater activation is
 considered drift and requires reviewing the recorded release before rollback.
 
@@ -267,7 +266,7 @@ the newer trusted receipt, not replacing the updater or editing its old receipt
 merely to make validation pass.
 
 Preserve each profile's current plugin enable state and settings. The current
-installation helper explicitly enables PresenceGuard in Main, including on update;
+installation helper explicitly enables PresenceGuard in the main profile, including on update;
 do not invoke that settings-writing path for a disabled existing installation.
 Build and stage independently, then use a reviewed settings-preserving update path
 before activation when that case applies. It never authorizes enabling another
