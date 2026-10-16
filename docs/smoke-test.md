@@ -10,7 +10,7 @@ are separate evidence.
 1. With both rules off, inspect configured status, local effective presence,
    native Idle, desktop activity and ownership. Let ordinary display blanking or
    locking occur. Those display facts must not cause configured-status writes.
-2. On Main with Automatic Idle enabled, deliberately select configured Online.
+2. With Automatic Idle enabled, deliberately select configured Online.
    Run one unlocked and one locked-but-awake five-minute inactivity cycle. A lock
    does not select Idle immediately; the desktop timer continues while locked.
    Confirm configured Idle, local effective presence, native Idle and plugin
