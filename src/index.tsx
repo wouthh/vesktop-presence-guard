@@ -6,10 +6,13 @@
 
 import { definePluginSettings } from "@api/Settings";
 import { getUserSettingLazy } from "@api/UserSettings";
+import { Button } from "@components/Button";
+import { Heading } from "@components/Heading";
+import { Paragraph } from "@components/Paragraph";
 import { openModal } from "@utils/modal";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { find, findByCode, findByProps, findModuleId, findStoreLazy, wreq } from "@webpack";
-import { Button, FluxDispatcher, Forms, Modal, React, UserSettingsProtoStore, UserStore, useState } from "@webpack/common";
+import { FluxDispatcher, Modal, React, UserSettingsProtoStore, UserStore, useState } from "@webpack/common";
 
 import { BUILD_INFO } from "./buildInfo";
 import { ActivityDetector, type ActivityObservation } from "./core/activity";
@@ -351,20 +354,20 @@ function Panel() {
     const { lastWrite } = statusWriteTrace;
     const [message, setMessage] = useState("");
     return <div style={{ padding: 16, maxHeight: "70vh", overflow: "auto" }}>
-        <Forms.FormTitle>PresenceGuard — {mode()}</Forms.FormTitle>
-        <Forms.FormText>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Forms.FormText>
-        <Forms.FormText>Connection: {engine?.connectionPhase ?? "starting"}; ownership: {engine?.ownershipPhase ?? "none"}; last ownership transition: {engine?.ownershipTransition ?? "none"} ({engine?.ownershipReason ?? "unknown"}){engine?.ownershipTransitionAt ? ` at ${new Date(engine.ownershipTransitionAt).toLocaleTimeString()}` : ""}; recovery blocked by: {engine?.recoveryReason ?? "none"}.</Forms.FormText>
-        <Forms.FormText>Latest: {engine?.latestDecision ?? "starting"}. Status updater: {updaterReadiness} (type {updaterType ?? "unknown"}); status hooks: {statusHooks ? "ready" : "unavailable"}; native Idle: {nativeIdleHook ? "ready" : "unavailable"}; save lifecycle: {saveHooks ? "tracked" : "unavailable"} ({patchError}).</Forms.FormText>
-        <Forms.FormText>Desktop activity: {s.activity.value} — {s.activity.reason}. Idle counter: {activityIdleMs === null ? "unavailable/input sample pending" : `${Math.max(0, Math.round(activityIdleMs / 1000))}s`}; qualification remaining: {idleQualificationRemainingMs === null ? "unavailable" : `${Math.ceil(idleQualificationRemainingMs / 1000)}s`}; sample age: {activitySampleAgeMs === null ? "unavailable" : `${activitySampleAgeMs}ms`}; continuity: {activityContinuityReason ?? "continuous"}; helper: {helperSnapshotHealth} (sequence {helperSnapshotSequence ?? "unavailable"}). Configured-status signature: {configuredSignatureHealth}. Native Idle: {String(s.nativeIdle)} (attributed: {String(s.nativeIdleAttributed)}). Configured-status save evidence: {saveState}; pending write: {engine?.pendingPhase ?? "none"}.</Forms.FormText>
-        {engine?.pausedDetails.map(item => <Forms.FormText key={item.rule}>Paused {item.rule}: {item.reason} at {new Date(item.at).toLocaleString()}</Forms.FormText>)}
-        <Forms.FormText>Local storage: {persistenceHealth.summary}. Pending history events: {historyWriter.pendingCount}.</Forms.FormText>
-        <Forms.FormText>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Forms.FormText>
-        <Forms.FormText>{describeDisplayFacts(s.display.facts)}. These facts do not prove the blanking cause.</Forms.FormText>
-        <Forms.FormText>Camera: {s.camera.value} — {s.camera.reason}. {s.camera.scope}. Last sample: {s.camera.at ? new Date(s.camera.at).toLocaleTimeString() : "none"}.</Forms.FormText>
-        <Forms.FormText>PipeWire: {pwCamera.value} — {pwCamera.reason}. Vesktop: {localCamera.value} — {localCamera.reason}.</Forms.FormText>
-        <Forms.FormText>Local presence is not independent proof of what other sessions or users see. Simulations never change status.</Forms.FormText>
-        <Forms.FormText>Desktop inactivity never uses phone activity. Local application, a correlated save acknowledgement, and mobile/server observations are separate evidence.</Forms.FormText>
-        {lastWrite && <Forms.FormText>Last configured-status write #{lastWrite.operation}: {lastWrite.target}, {lastWrite.phase}/{lastWrite.outcome}{lastWrite.errorCode ? ` (${lastWrite.errorCode})` : ""}. Requested {new Date(lastWrite.requestedAt).toLocaleTimeString()}, updated {new Date(lastWrite.updatedAt).toLocaleTimeString()}.</Forms.FormText>}
+        <Heading>PresenceGuard — {mode()}</Heading>
+        <Paragraph>Configured: {s.configured} · Local effective: {s.effective} · Local aggregate: {s.aggregate} · Owned: {engine?.ownership?.status ?? "no"}</Paragraph>
+        <Paragraph>Connection: {engine?.connectionPhase ?? "starting"}; ownership: {engine?.ownershipPhase ?? "none"}; last ownership transition: {engine?.ownershipTransition ?? "none"} ({engine?.ownershipReason ?? "unknown"}){engine?.ownershipTransitionAt ? ` at ${new Date(engine.ownershipTransitionAt).toLocaleTimeString()}` : ""}; recovery blocked by: {engine?.recoveryReason ?? "none"}.</Paragraph>
+        <Paragraph>Latest: {engine?.latestDecision ?? "starting"}. Status updater: {updaterReadiness} (type {updaterType ?? "unknown"}); status hooks: {statusHooks ? "ready" : "unavailable"}; native Idle: {nativeIdleHook ? "ready" : "unavailable"}; save lifecycle: {saveHooks ? "tracked" : "unavailable"} ({patchError}).</Paragraph>
+        <Paragraph>Desktop activity: {s.activity.value} — {s.activity.reason}. Idle counter: {activityIdleMs === null ? "unavailable/input sample pending" : `${Math.max(0, Math.round(activityIdleMs / 1000))}s`}; qualification remaining: {idleQualificationRemainingMs === null ? "unavailable" : `${Math.ceil(idleQualificationRemainingMs / 1000)}s`}; sample age: {activitySampleAgeMs === null ? "unavailable" : `${activitySampleAgeMs}ms`}; continuity: {activityContinuityReason ?? "continuous"}; helper: {helperSnapshotHealth} (sequence {helperSnapshotSequence ?? "unavailable"}). Configured-status signature: {configuredSignatureHealth}. Native Idle: {String(s.nativeIdle)} (attributed: {String(s.nativeIdleAttributed)}). Configured-status save evidence: {saveState}; pending write: {engine?.pendingPhase ?? "none"}.</Paragraph>
+        {engine?.pausedDetails.map(item => <Paragraph key={item.rule}>Paused {item.rule}: {item.reason} at {new Date(item.at).toLocaleString()}</Paragraph>)}
+        <Paragraph>Local storage: {persistenceHealth.summary}. Pending history events: {historyWriter.pendingCount}.</Paragraph>
+        <Paragraph>Display: {s.display.value} — {s.display.reason}. Last sample: {s.display.at ? new Date(s.display.at).toLocaleTimeString() : "none"}.</Paragraph>
+        <Paragraph>{describeDisplayFacts(s.display.facts)}. These facts do not prove the blanking cause.</Paragraph>
+        <Paragraph>Camera: {s.camera.value} — {s.camera.reason}. {s.camera.scope}. Last sample: {s.camera.at ? new Date(s.camera.at).toLocaleTimeString() : "none"}.</Paragraph>
+        <Paragraph>PipeWire: {pwCamera.value} — {pwCamera.reason}. Vesktop: {localCamera.value} — {localCamera.reason}.</Paragraph>
+        <Paragraph>Local presence is not independent proof of what other sessions or users see. Simulations never change status.</Paragraph>
+        <Paragraph>Desktop inactivity never uses phone activity. Local application, a correlated save acknowledgement, and mobile/server observations are separate evidence.</Paragraph>
+        {lastWrite && <Paragraph>Last configured-status write #{lastWrite.operation}: {lastWrite.target}, {lastWrite.phase}/{lastWrite.outcome}{lastWrite.errorCode ? ` (${lastWrite.errorCode})` : ""}. Requested {new Date(lastWrite.requestedAt).toLocaleTimeString()}, updated {new Date(lastWrite.updatedAt).toLocaleTimeString()}.</Paragraph>}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, margin: "12px 0" }}>
             <Button onClick={() => { settings.store.idle = !settings.store.idle; configure(); }}>Automatic Idle: {settings.store.idle ? "On" : "Off"}</Button>
             <Button onClick={() => { settings.store.camera = !settings.store.camera; configure(); }}>Webcam DND: {settings.store.camera ? "On" : "Off"}</Button>
@@ -373,8 +376,8 @@ function Panel() {
             <Button onClick={() => { if (confirm("Clear local PresenceGuard history?")) { historyGeneration++; void clearHistoryView(historyView, () => historyWriter.clear(() => persistenceHealth.run("history_clear", () => Native.clearHistory())), loadHistory).catch(() => setMessage("History could not be cleared. Reloaded saved events where readable; current events retained.")); } }}>Clear history</Button>
             <Button onClick={() => void simulate().then(lines => setMessage(`SIMULATION ONLY — ${lines.join("; ")}. No live status action was issued.`))}>Run fixture simulation</Button>
         </div>
-        <Forms.FormText>{message}</Forms.FormText>
-        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Forms.FormText>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}{e.ownershipPhase ? ` · ownership ${e.ownershipPhase}` : ""}{e.saveState ? ` · save ${e.saveState}` : ""}{e.repeatCount && e.repeatCount > 1 ? ` · ${e.repeatCount} repeats (${new Date(e.firstAt ?? e.at).toLocaleTimeString()}–${new Date(e.lastAt ?? e.at).toLocaleTimeString()})` : ""}</Forms.FormText><Forms.FormText>Activity {e.activity?.value ?? "unavailable"}: {e.activity?.reason ?? "legacy history"} · native Idle attributed {String(e.nativeIdleAttributed ?? false)} · Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Forms.FormText></li>)}</ol>
+        <Paragraph>{message}</Paragraph>
+        <ol style={{ paddingLeft: 20 }}>{events.slice(-60).reverse().map((e, i) => <li key={`${e.at}-${i}`} style={{ marginBottom: 8 }}><Paragraph>{new Date(e.at).toLocaleString()} · {e.kind.toUpperCase()} · {e.source} · {e.previous} → {e.status} · configured {e.configured} · {e.reason} · owned {String(e.owned)}{e.ownershipPhase ? ` · ownership ${e.ownershipPhase}` : ""}{e.saveState ? ` · save ${e.saveState}` : ""}{e.repeatCount && e.repeatCount > 1 ? ` · ${e.repeatCount} repeats (${new Date(e.firstAt ?? e.at).toLocaleTimeString()}–${new Date(e.lastAt ?? e.at).toLocaleTimeString()})` : ""}</Paragraph><Paragraph>Activity {e.activity?.value ?? "unavailable"}: {e.activity?.reason ?? "legacy history"} · native Idle attributed {String(e.nativeIdleAttributed ?? false)} · Display {e.display.value}: {e.display.reason} · {describeDisplayFacts(e.display.facts)} · Camera {e.camera.value}: {e.camera.reason}</Paragraph></li>)}</ol>
     </div>;
 }
 function openPanel() { openModal(props => <Modal {...props} title="PresenceGuard"><Panel /></Modal>); }
