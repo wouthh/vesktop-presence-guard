@@ -16,6 +16,18 @@ test("picker patches invoke manual hook for same value and duration, preserving 
     assert.deepEqual(await p.duration(), { nextStatus: "idle", prevStatus: "idle", durationMillis: 900 });
     assert.deepEqual(order, ["ready", "manual", "action", "manual", "action"]);
 });
+test("status action patch hooks named and anonymous exported status actions", async () => {
+    for (const shape of ["async function choose(a){let{nextStatus:s,prevStatus:p}=a;return a;}", "n.d(t,{},{A:async function(a){let{nextStatus:s,prevStatus:p,durationMillis:m}=a;return a;}})"]) {
+        assert.ok(actionPatch.find.test(shape), shape);
+        const code = shape.replace(actionPatch.replacement.match, actionPatch.replacement.replace);
+        assert.notEqual(code, shape);
+        const seen: any[] = []; const exported: Record<string, any> = {};
+        const choose = new Function("$self", "n", "t", `const d=(e,g,v)=>Object.assign(e,v);n={d};${code};return typeof choose==="function"?choose:t.A;`)({ statusAction: (o: any) => seen.push(o) }, undefined, exported);
+        const options = { nextStatus: "idle", prevStatus: "online" };
+        assert.deepEqual(await choose(options), options);
+        assert.deepEqual(seen, [options]);
+    }
+});
 test("async updater patch carries exact callback/proto identity across load", async () => {
     const provenance = new Provenance();
     const callback = () => {}, token = { generation: 1, target: "idle" as const, rule: "idle" as const };
@@ -227,22 +239,25 @@ test("a null decoded server acknowledgement is reported before the save path ret
 });
 
 test("native Idle integration changes only the local IDLE branch and keeps its reevaluator Idle-only", () => {
-    const source = 'function N(){let e;Date.now()-I>A.sdF||S()?f||l.h.dispatch({type:"IDLE",idle:!0,idleSince:I}):f&&l.h.dispatch({type:"IDLE",idle:!1}),0===(e=c.cU.getSetting())||null!=i||Date.now()-I>Math.min(e*u.A.Millis.SECOND,A.sdF)||S()?p||l.h.dispatch({type:"AFK",afk:!0}):p&&l.h.dispatch({type:"AFK",afk:!1})}';
-    const code = source.replace(nativeIdlePatch.replacement.match, nativeIdlePatch.replacement.replace);
-    assert.notEqual(code, source);
-    const events: any[] = []; let reconcile!: () => void, idle = true; const idleSince = 1000;
-    let decisionInput: boolean | undefined, suppress = true;
-    const nativeObservations: [boolean, boolean][] = [];
-    const self = { nativeIdleProviderReady: (fn: () => void) => { reconcile = fn; }, nativeIdleDecision: (eligible: boolean) => { decisionInput = eligible; return suppress ? false : eligible; }, nativeIdleCurrent: () => idle, nativeIdleObserved: (eligible: boolean, localIdle: boolean) => nativeObservations.push([eligible, localIdle]), nativeIdleDispatch: (next: boolean) => { idle = next; } };
-    const N = new Function("$self", "Date", "I", "A", "S", "f", "l", "c", "i", "u", "p", `return (${code});`)(self, Date, 1000, { sdF: 1 }, () => false, idle, { h: { dispatch: (event: any) => { events.push(event); if (event.type === "IDLE") idle = event.idle; } } }, { cU: { getSetting: () => 0 } }, null, { A: { Millis: { SECOND: 1000 } } }, false);
-    N(); const afkCount = events.filter(event => event.type === "AFK").length; const timestamp = idleSince;
-    assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false]);
-    assert.equal(decisionInput, true);
-    reconcile(); assert.deepEqual(nativeObservations, [[false, false]]); assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
-    suppress = false; reconcile();
-    assert.deepEqual(nativeObservations, [[false, false], [true, false]]);
-    assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false, true]);
-    assert.equal(idle, true);
-    assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
-    assert.equal(idleSince, timestamp);
+    // Discord has shipped the threshold both as a named constant and as an inlined literal.
+    for (const threshold of ["A.sdF", "6e5"]) {
+        const source = `function N(){let e;Date.now()-I>${threshold}||S()?f||l.h.dispatch({type:"IDLE",idle:!0,idleSince:I}):f&&l.h.dispatch({type:"IDLE",idle:!1}),0===(e=c.cU.getSetting())||null!=i||Date.now()-I>Math.min(e*u.A.Millis.SECOND,A.sdF)||S()?p||l.h.dispatch({type:"AFK",afk:!0}):p&&l.h.dispatch({type:"AFK",afk:!1})}`;
+        const code = source.replace(nativeIdlePatch.replacement.match, nativeIdlePatch.replacement.replace);
+        assert.notEqual(code, source);
+        const events: any[] = []; let reconcile!: () => void, idle = true; const idleSince = 1000;
+        let decisionInput: boolean | undefined, suppress = true;
+        const nativeObservations: [boolean, boolean][] = [];
+        const self = { nativeIdleProviderReady: (fn: () => void) => { reconcile = fn; }, nativeIdleDecision: (eligible: boolean) => { decisionInput = eligible; return suppress ? false : eligible; }, nativeIdleCurrent: () => idle, nativeIdleObserved: (eligible: boolean, localIdle: boolean) => nativeObservations.push([eligible, localIdle]), nativeIdleDispatch: (next: boolean) => { idle = next; } };
+        const N = new Function("$self", "Date", "I", "A", "S", "f", "l", "c", "i", "u", "p", `return (${code});`)(self, Date, 1000, { sdF: 1 }, () => false, idle, { h: { dispatch: (event: any) => { events.push(event); if (event.type === "IDLE") idle = event.idle; } } }, { cU: { getSetting: () => 0 } }, null, { A: { Millis: { SECOND: 1000 } } }, false);
+        N(); const afkCount = events.filter(event => event.type === "AFK").length; const timestamp = idleSince;
+        assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false]);
+        assert.equal(decisionInput, true);
+        reconcile(); assert.deepEqual(nativeObservations, [[false, false]]); assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
+        suppress = false; reconcile();
+        assert.deepEqual(nativeObservations, [[false, false], [true, false]]);
+        assert.deepEqual(events.filter(event => event.type === "IDLE").map(event => event.idle), [false, true]);
+        assert.equal(idle, true);
+        assert.equal(events.filter(event => event.type === "AFK").length, afkCount);
+        assert.equal(idleSince, timestamp);
+    }
 });
