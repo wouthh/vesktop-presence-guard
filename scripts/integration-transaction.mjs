@@ -7,16 +7,14 @@ import { regularBytes } from "./regular-file.mjs";
 import { syncDirectory } from "./stage-transaction.mjs";
 
 export const integrationPaths = c => ({
-    launcher: c.mainLauncher, updater: c.updater,
     settings: join(c.mainProfile, "settings/settings.json"),
     helper: join(c.vencordRoot, ".presence-guard/display-helper.mjs"),
     helperConfig: join(c.mainProfile, "PresenceGuard/installation.json"),
     lease: join(c.mainProfile, "PresenceGuard/lease.json"),
-    launcherReceipt: join(c.ledger, "installed-launcher.sha256"), updaterReceipt: join(c.ledger, "installed-updater.sha256"),
     installed: join(c.ledger, "installed.json"), rolledBack: join(c.ledger, "rolled-back.json")
 });
 const journalPath = c => join(c.ledger, "integration-transaction.json");
-const descriptorHash = c => hash(JSON.stringify(Object.fromEntries(["vencordRoot", "mainProfile", "altProfile", "mainLauncher", "updater", "updaterLock", "updaterPending", "ledger"].map(key => [key, c[key] ?? null]))));
+const descriptorHash = c => hash(JSON.stringify(Object.fromEntries(["vencordRoot", "mainProfile", "altProfile", "updater", "updaterLock", "updaterPending", "ledger"].map(key => [key, c[key] ?? null]))));
 const present = path => { try { return fs.lstatSync(path); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const imagePath = (path, id) => join(dirname(path), `.${basename(path)}.presence-guard-${id}.image`);
@@ -67,7 +65,6 @@ export function pendingIntegration(c) {
     if (tx.version !== 1 || !["install", "rollback"].includes(tx.kind) || !/^[a-f0-9-]{36}$/.test(tx.id) || !/^[a-f0-9]{40}$/.test(tx.commit) || !Array.isArray(tx.files) || !tx.files.length || tx.files.length > 9 || new Set(tx.files.map(f => f.key)).size !== tx.files.length) throw Error("invalid_integration_transaction");
     const paths = integrationPaths(c);
     if (tx.descriptorHash !== descriptorHash(c)) throw Error("integration_descriptor_drift");
-    if (!same(Object.keys(tx.guards ?? {}), tx.kind === "install" ? ["updater", "updaterReceipt"] : ["updaterReceipt"])) throw Error("invalid_integration_guards");
     for (const file of tx.files) {
         if (!Object.hasOwn(paths, file.key)) throw Error("invalid_integration_target");
         for (const s of [file.before, file.after]) if (s !== null && (!s || !/^[a-f0-9]{64}$/.test(s.hash) || !Number.isInteger(s.mode) || s.mode < 0 || s.mode > 0o777)) throw Error("invalid_integration_file_state");
@@ -81,9 +78,7 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
     const paths = integrationPaths(c), id = randomUUID(), created = [];
     const initialParents = parentChain(Object.values(paths));
     for (const change of changes) if (change.expectedParents) validateParents(change.expectedParents);
-    const guards = Object.fromEntries((kind === "install" ? ["updater", "updaterReceipt"] : ["updaterReceipt"]).map(key => [key, state(paths[key])]));
-    if (Object.values(guards).some(value => !value)) throw Error("integration_wiring_missing");
-    const tx = { version: 1, kind, commit, id, descriptorHash: descriptorHash(c), guards, beforeDist: retained(c, fs.realpathSync(join(c.vencordRoot, "dist"))), afterDist: retained(c, afterDist), files: [] };
+    const tx = { version: 1, kind, commit, id, descriptorHash: descriptorHash(c), beforeDist: retained(c, fs.realpathSync(join(c.vencordRoot, "dist"))), afterDist: retained(c, afterDist), files: [] };
     try {
         for (const change of changes) {
             const { key, data, mode = 0o600 } = change;
@@ -119,7 +114,6 @@ export function prepareIntegration(c, kind, commit, afterDist, changes, io = fs)
 function validate(c, tx) {
     if (tx.descriptorHash !== descriptorHash(c)) throw Error("integration_descriptor_drift");
     validateParents(tx.parents);
-    for (const [key, expected] of Object.entries(tx.guards)) if (!same(state(integrationPaths(c)[key]), expected)) throw Error("integration_wiring_drift");
     if (!same(retained(c, tx.afterDist.path), tx.afterDist)) throw Error("integration_candidate_drift");
     const current = fs.realpathSync(join(c.vencordRoot, "dist"));
     if (current !== tx.beforeDist.path && current !== tx.afterDist.path) throw Error("integration_active_release_drift");

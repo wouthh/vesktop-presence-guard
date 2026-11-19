@@ -11,17 +11,18 @@ import { finishIntegration, pendingIntegration, prepareIntegration, integrationP
 
 function fixture(t: any, kind = "install") {
     const root = fs.mkdtempSync(join(tmpdir(), "presence-guard-integration-")); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const c = { vencordRoot: root, ledger: join(root, "ledger"), mainProfile: join(root, "profile"), mainLauncher: join(root, "bin/launcher"), updater: join(root, "bin/updater") };
-    fs.mkdirSync(c.ledger); fs.writeFileSync(join(c.ledger, "installed-updater.sha256"), "synthetic receipt", { mode: 0o600 }); fs.mkdirSync(dirname(c.mainLauncher)); fs.mkdirSync(join(c.mainProfile, "settings"), { recursive: true });
+    const c = { vencordRoot: root, ledger: join(root, "ledger"), mainProfile: join(root, "profile") };
+    const helper = integrationPaths(c).helper;
+    fs.mkdirSync(c.ledger); fs.mkdirSync(dirname(helper), { recursive: true }); fs.mkdirSync(join(c.mainProfile, "settings"), { recursive: true });
     const before = join(root, ".wout-releases/before/dist"), after = join(root, ".wout-releases/after/dist");
     for (const path of [before, after]) { fs.mkdirSync(path, { recursive: true }); fs.writeFileSync(join(path, "bundle.js"), path === before ? "before" : "after"); }
     fs.symlinkSync(before, join(root, "dist"));
-    fs.writeFileSync(c.mainLauncher, "original launcher", { mode: 0o700 }); fs.writeFileSync(c.updater, "original updater", { mode: 0o700 });
+    fs.writeFileSync(helper, "original helper", { mode: 0o700 });
     fs.writeFileSync(join(c.mainProfile, "settings/settings.json"), '{"unchanged":true}', { mode: 0o600 });
-    const changes = [{ key: "launcher", data: "prepared launcher", mode: 0o700 }, { key: "settings", data: '{"unchanged":true,"PresenceGuard":true}' }, { key: kind === "install" ? "helperConfig" : "lease", data: "prepared config" }, { key: kind === "install" ? "installed" : "rolledBack", data: "prepared receipt" }];
+    const changes = [{ key: "helper", data: "prepared helper", mode: 0o700 }, { key: "settings", data: '{"unchanged":true,"PresenceGuard":true}' }, { key: kind === "install" ? "helperConfig" : "lease", data: "prepared config" }, { key: kind === "install" ? "installed" : "rolledBack", data: "prepared receipt" }];
     const activate = (expected: string) => { assert.equal(expected, after); const link = join(root, "activation.tmp"); fs.symlinkSync(after, link); fs.renameSync(link, join(root, "dist")); };
     const prepare = (io = fs) => prepareIntegration(c, kind, "a".repeat(40), after, changes, io);
-    return { c, before, after, changes, activate, prepare };
+    return { c, helper, before, after, changes, activate, prepare };
 }
 for (const kind of ["install", "rollback"]) for (const operation of ["linkSync", "renameSync", "fsyncSync"]) test(`${kind} recovers after each ${operation} failure following activation`, t => {
     const probe = fixture(t, kind), tx = probe.prepare(); let total = 0;
@@ -44,7 +45,7 @@ test("preparation failures leave live integration unchanged and permit retry", t
             const f = fixture(t); let calls = 0;
             assert.throws(() => f.prepare({ ...fs, [operation]: (...args: any[]) => { if (++calls === fail) throw Error("injected_prepare"); return (fs as any)[operation](...args); } } as any), /injected_prepare/);
             assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
-            assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "original launcher");
+            assert.equal(fs.readFileSync(f.helper, "utf8"), "original helper");
             const tx = pendingIntegration(f.c) ?? f.prepare(); finishIntegration(f.c, tx, f.activate);
             assert.equal(pendingIntegration(f.c), null);
         }
@@ -61,15 +62,15 @@ test("rollback can cancel an installation that never activated", t => {
     assert.throws(() => finishIntegration(f.c, tx, () => { throw Error("activation_failed"); }), /activation_failed/);
     const result = finishIntegration(f.c, pendingIntegration(f.c), () => { throw Error("must_not_activate"); }, true);
     assert.equal(result.cancelled, true); assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
-    assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "original launcher"); assert.equal(pendingIntegration(f.c), null);
+    assert.equal(fs.readFileSync(f.helper, "utf8"), "original helper"); assert.equal(pendingIntegration(f.c), null);
 });
 test("recovery preserves unrelated edits instead of overwriting them", t => {
-    const f = fixture(t), tx = f.prepare(); f.activate(f.after); fs.writeFileSync(f.c.mainLauncher, "unexplained edit");
+    const f = fixture(t), tx = f.prepare(); f.activate(f.after); fs.writeFileSync(f.helper, "unexplained edit");
     assert.throws(() => finishIntegration(f.c, tx, f.activate), /target_drift/);
-    assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "unexplained edit"); assert(pendingIntegration(f.c));
+    assert.equal(fs.readFileSync(f.helper, "utf8"), "unexplained edit"); assert(pendingIntegration(f.c));
 });
-for (const kind of ["install", "rollback"]) test(`${kind} rejects settings or launcher edits made after planning began`, t => {
-    for (const key of ["settings", "launcher"]) {
+for (const kind of ["install", "rollback"]) test(`${kind} rejects settings or helper edits made after planning began`, t => {
+    for (const key of ["settings", "helper"]) {
         const f = fixture(t, kind), before = snapshotIntegrationTargets(f.c);
         const planned = f.changes.map(change => ({ ...change, expectedBefore: before[change.key] }));
         const path = integrationPaths(f.c)[key]; fs.writeFileSync(path, "new unrelated user edit");
@@ -81,10 +82,10 @@ for (const kind of ["install", "rollback"]) test(`${kind} rejects settings or la
 });
 
 test("prepared-image symlinks are rejected before activating or writing targets", t => {
-    const f = fixture(t), tx = f.prepare(), image = join(dirname(f.c.mainLauncher), `.launcher.presence-guard-${tx.id}.image`), copy = image + ".copy";
+    const f = fixture(t), tx = f.prepare(), image = join(dirname(f.helper), `.display-helper.mjs.presence-guard-${tx.id}.image`), copy = image + ".copy";
     fs.writeFileSync(copy, fs.readFileSync(image), { mode: 0o700 }); fs.unlinkSync(image); fs.symlinkSync(copy, image);
     assert.throws(() => finishIntegration(f.c, tx, () => { throw Error("must_not_activate"); }), /ELOOP/);
-    assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before); assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "original launcher");
+    assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before); assert.equal(fs.readFileSync(f.helper, "utf8"), "original helper");
 });
 test("a release manually reverted after partial file writes is not activated again", t => {
     const f = fixture(t), tx = f.prepare(); let renames = 0;
@@ -105,29 +106,22 @@ test("a process killed during journal writing leaves no partial published journa
     assert.throws(() => execFileSync(process.execPath, ["--input-type=module", "-e", code, JSON.stringify(f)], { timeout: 5000, stdio: "pipe" }), (error: any) => error.signal === "SIGKILL");
     assert.equal(pendingIntegration(f.c), null);
     assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
-    assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "original launcher");
+    assert.equal(fs.readFileSync(f.helper, "utf8"), "original helper");
     finishIntegration(f.c, f.prepare(), f.activate); assert.equal(pendingIntegration(f.c), null);
 });
 test("recovery rejects a changed installation descriptor before remapping targets", t => {
     const f = fixture(t), tx = f.prepare();
-    for (const key of ["mainProfile", "mainLauncher", "updater", "altProfile", "updaterLock", "updaterPending"]) {
+    for (const key of ["mainProfile", "updater", "altProfile", "updaterLock", "updaterPending"]) {
         const changed = { ...f.c, [key]: join(f.c.vencordRoot, "replacement") };
         assert.throws(() => pendingIntegration(changed), /descriptor_drift/);
         assert.throws(() => finishIntegration(changed, tx, f.activate), /descriptor_drift/);
     }
-    assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "original launcher");
-});
-for (const target of ["updater", "updaterReceipt"]) test(`already-activated recovery rejects ${target} drift before changing files`, t => {
-    const f = fixture(t); f.prepare(); f.activate(f.after);
-    const path = integrationPaths(f.c)[target]; fs.writeFileSync(path, "unexplained change");
-    assert.throws(() => finishIntegration(f.c, pendingIntegration(f.c), () => { throw Error("must_not_activate"); }), /wiring_drift/);
-    assert.equal(fs.readFileSync(f.c.mainLauncher, "utf8"), "original launcher");
-    assert.equal(fs.readFileSync(path, "utf8"), "unexplained change");
+    assert.equal(fs.readFileSync(f.helper, "utf8"), "original helper");
 });
 test("transaction state refuses newly added special permission bits", t => {
-    const f = fixture(t), tx = f.prepare(); fs.chmodSync(f.c.mainLauncher, 0o1700);
+    const f = fixture(t), tx = f.prepare(); fs.chmodSync(f.helper, 0o1700);
     assert.throws(() => finishIntegration(f.c, tx, f.activate), /special_permission_bits/);
-    assert.equal(fs.statSync(f.c.mainLauncher).mode & 0o7777, 0o1700);
+    assert.equal(fs.statSync(f.helper).mode & 0o7777, 0o1700);
     assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
 });
 
@@ -142,4 +136,8 @@ for (const kind of ["install", "rollback"]) for (const replacement of ["symlink"
     assert.equal(fs.readFileSync(join(f.c.mainProfile, "settings/settings.json"), "utf8"), '{"unchanged":true}');
     assert.equal(fs.readFileSync(join(original, "settings/settings.json"), "utf8"), '{"unchanged":true}');
     assert.equal(fs.realpathSync(join(f.c.vencordRoot, "dist")), f.before);
+});
+test("integration targets never include the host launcher or updater", t => {
+    const f = fixture(t);
+    assert.deepEqual(Object.keys(integrationPaths({ ...f.c, mainLauncher: "/x/launcher", updater: "/x/updater" })).sort(), ["helper", "helperConfig", "installed", "lease", "rolledBack", "settings"]);
 });

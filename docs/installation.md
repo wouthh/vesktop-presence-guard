@@ -9,31 +9,30 @@ as unavailable; do not broaden sandbox permissions as a shortcut.
 
 The installer deliberately consumes an **owner-only, external JSON descriptor**.
 Keep this local. Required absolute-path fields are `vencordRoot`, `mainProfile`,
-`altProfile`, `mainLauncher`, `updater`, `updaterLock`, and `ledger`.
+`altProfile`, `updater`, `updaterLock`, and `ledger`. An optional `mainLauncher`
+only lets `inspect` report, read-only, whether that launcher starts the observer.
 Installation also requires `updaterPending`, the absolute path to the maintained
 updater's private `pending.json`. The two profiles must differ and main `state.json` must already reference the maintained
-`dist` location. The supported main launcher ends in its existing `exec`
-Mullvad-excluded Flatpak invocation; unexpected launchers are rejected intact.
+`dist` location.
+
+The Vesktop launcher and the Vencord updater executable are owned by the host
+tooling, not by this installer: it never records, pins, modifies or restores
+them, and changing them never blocks an operation. The launcher must itself start
+the process-bound observer (`# PresenceGuard process-bound observer` block); the
+updater is only run, by its descriptor path, and must implement the contract
+below. `inspect` reports `launcherStartsObserver` when `mainLauncher` is set.
 
 Before the first installation, the private ledger's `backups` directory must
-contain `main-launcher`, `updater`, and `main-plugins` (the original main Vencord
-settings JSON). Also back up both profiles' state/settings and the second profile's launcher.
-Before modifying executables, record their original numeric Unix modes in
-`backups/executable-modes.json`, with keys `main-launcher` and `updater` (for
-example, 448 represents mode 0700). The baseline authenticates this file and
-restores those modes; private backup copies may themselves stay mode 0600.
-This first implementation has no previously released installation format.
-Intermediate, unmerged development receipts are not a supported upgrade source;
-do not rewrite authenticated metadata or guess missing original modes to bypass
-a failure. Preserve it and use independently verified recovery evidence.
-The existing private updater needs a reviewed extension to include the exact
+contain `main-plugins` (the original main Vencord settings JSON). Also back up
+both profiles' state/settings. This first implementation has no previously
+released installation format; do not rewrite authenticated metadata to bypass a
+failure. Preserve it and use independently verified recovery evidence.
+The host updater must include the exact
 PresenceGuard staging manifest, verify its hashes against canonical source,
 recheck candidate bundle hashes at activation, preserve its source alongside
 all existing custom plugins, and protect the release named in
-`.presence-guard/baseline.json` from retention pruning. Record its installed SHA256
-in the required `installed-updater.sha256` receipt in the ledger; an original
-unextended updater is not accepted as a substitute. This project does not publish or
-replace private updaters. The adapter's supported commands are `rebuild` and
+`.presence-guard/baseline.json` from retention pruning. This project does not publish or
+replace updaters. The adapter's supported commands are `rebuild` and
 `activate`, using the existing lock and retained-release workflow. It must support
 the reviewed Linux descriptor handoff: validate `PRESENCE_GUARD_LOCK_FD=4` against
 the actual lock file and a held exclusive flock before retaining that descriptor
@@ -65,24 +64,23 @@ so partial recursive deletion cannot strand the live staging path. Cleanup
 can leave hidden generated directories for later inspection; never remove
 unexplained directories to bypass a receipt failure. Legacy staging can
 be attested only when it matches current canonical source exactly. `prepare`
-checks updater provenance and executable modes before staging
+checks the baseline and rollback state before staging
 (including dry runs). Preparation and updater invocation share one held lock;
-the updater inherits that lock and the verified executable descriptor.
+the updater inherits that lock and is executed from its opened descriptor.
 It builds an isolated candidate without activation.
 The canonical project gate and the full combined Vencord checks must pass first.
 Commit all source changes before installation; dirty or mismatched heads fail.
 Installation compiles the helper from Git blobs of the recorded commit in an
 isolated snapshot, rejects compiler inputs outside that snapshot, and records its
-hash; ignored build artifacts are never installed as trusted input. Launcher and
-helper configuration and the installation receipt target are checked before
+hash; ignored build artifacts are never installed as trusted input. Helper
+configuration and the installation receipt target are checked before
 candidate activation. Unexpected directories, symlinks and read-only receipt
 targets stop the operation before integration changes.
 An installation receipt also requires its recorded helper and configuration to
 remain present; updates do not silently recreate missing installed artifacts.
 Orphaned helper configuration and unsafe helper log, lease, history, diagnostics
 and snapshot targets are also rejected. Without an installation receipt those
-runtime files must be absent, even if they are regular and writable. Installed
-launcher and updater receipts are mandatory for updates. A first install forces observation on
+runtime files must be absent, even if they are regular and writable. A first install forces observation on
 and both rules off, even if a stale settings entry exists; verified updates keep
 the existing rule preferences.
 
@@ -111,8 +109,8 @@ authority. If an unrelated instance remains, defer this shared-host activation;
 the descriptor and this procedure do not authorize stopping it. Do not weaken the
 guard or broaden a process kill to make installation proceed.
 It pins and hashes the previous retained release, activates
-the validated candidate, verifies its plugin and commit identity, adds the
-process-bound helper to the existing main launcher, and enables main observation
+the validated candidate, verifies its plugin and commit identity, installs the
+process-bound helper (the host launcher starts it), and enables main observation
 with both rules off. The second profile's settings stay unchanged. Relaunch only profiles that were running before the operation, through
 their existing launchers. The panel opens once. Verify the main profile's local
 `PresenceGuard/diagnostics.json`, `history.json`, and panel; check enabled state,
@@ -129,11 +127,7 @@ For later updates, pull/review changes normally, run `pnpm check`, commit them,
 run `prepare`, gracefully close the mapped profiles under the same restart authority,
 and run `update` instead of `install`. Existing rule preferences are preserved.
 `inspect` and `--dry-run` do not activate, write settings, or terminate processes.
-Installation/update dry runs also check executable receipts and recorded modes.
-Unexpected source/launcher/updater/build drift stops the operation for review.
-Executable and receipt reads reject non-regular files without blocking. Both
-executable modes must match their authenticated records; an update cannot carry
-forward unexplained permission changes.
+Unexpected source/build drift stops the operation for review.
 The internal lock handoff verifies a kernel-reported exclusive lock on the exact
 updater lock file owned by the current process; a caller-supplied marker cannot
 bypass locking.
@@ -149,13 +143,12 @@ node scripts/install.mjs rollback --config "$PG_CONFIG"
 # `uninstall` is an alias for the same integration restoration.
 ```
 
-Rollback checks launcher/updater receipts, current installed bundle hashes and
+Rollback checks the current installed bundle hashes and
 the pinned original release, then atomically switches the retained build back.
 The manifest is authenticated against a separate `baseline.sha256` in the private
-ledger before any paths or bundle hashes in it are trusted. The private updater
+ledger before any paths or bundle hashes in it are trusted. The updater
 must verify that anchor before using the manifest to protect a release from pruning.
-It restores the original main launcher and private updater with their recorded
-permissions, restores only the
+It never writes the launcher or updater; it restores only the
 PresenceGuard settings entry, and disables the helper lease. Unrelated settings,
 second-profile configuration and local history remain. Relaunch normally. Repeating a
 successful rollback is a verified no-op. Later unrelated updater activation is
@@ -163,8 +156,7 @@ considered drift and requires reviewing the recorded release before rollback.
 
 Generated source/helper files and history are retained for inspection, not
 collected after uninstall. Reinstallation after rollback uses the **original
-ledger and descriptor**: reapply the reviewed private updater extension and its
-installed-updater receipt, run `prepare`, then `install` after the same safe Quit
+ledger and descriptor**: run `prepare`, then `install` after the same safe Quit
 procedure. The recorded rollback, original build and retained helper/configuration
 are verified before reusing them. First-install defaults and the welcome panel are
 restored, and the rollback marker is cleared only after installation succeeds. Do not
@@ -176,16 +168,16 @@ Before activation or rollback, the installer durably prepares the exact target
 files and atomically publishes a complete `integration-transaction.json` in the
 private ledger. Each target must still match the hash and permissions captured
 before planning began; edits during helper compilation or other preflight checks
-cannot be adopted and overwritten by an older settings or launcher plan.
+cannot be adopted and overwritten by an older settings plan.
 A crash during journal preparation leaves the published journal
 absent and the live integration untouched. Recovery authenticates the original
-descriptor paths and unchanged updater/receipt, including complete permission bits.
+descriptor paths.
 Both profiles must remain closed. Repeating the interrupted command verifies the
 recorded releases, prepared file images, and every current target against its
 before/after states, then finishes the recorded operation. Unexpected edits stop
 recovery. A recovered older installation is reported explicitly; prepare the
-current head and update again afterward. A recovered rollback requires reapplying
-the reviewed updater before a new installation.
+current head and update again afterward. A recovered rollback requires running
+`prepare` again before a new installation.
 
 `rollback` can cancel an installation that never activated. If activation already
 occurred, it finishes the known prepared file changes before restoring the pinned
@@ -213,7 +205,7 @@ recorded original release to remain active and its files and backups to match.
 An unjournaled missing or mismatched anchor remains an error. Inspection reports
 a pending initial publication, and dry runs refuse recovery without writing files. Repeated rollback
 validates its receipt, original PresenceGuard entry and disabled lease as well as
-the build and executables; later drift is preserved and reported.
+the build; later drift is preserved and reported.
 
 GNOME's `ScreenSaver.GetActive` exposes screen-shield activity, not an authentication
 lock. The helper reads `login1.Session.LockedHint` separately and validates that
@@ -231,8 +223,7 @@ release in `PRESENCE_GUARD_PENDING_*` / `PRESENCE_GUARD_EXPECTED_RELEASE`. The u
 must validate that identity and use the snapshot for all activation reads; it must
 preserve an unexpectedly changed original pending file. FD 4 remains the held
 updater lock. An older updater without the contract marker is rejected. Rebuilds
-do not receive pending activation input. The local descriptor's authenticated
-updater receipt must match the implementation before preparation or installation.
+do not receive pending activation input.
 
 Integration recovery records every existing parent directory's device/inode
 identity and rejects changed ancestors, including byte-identical replacement
@@ -262,9 +253,7 @@ host pin, local patches and every unrelated local plugin. Coalesce compatible
 personal plugin updates into one validated retained build and one restart group.
 Keep the original PresenceGuard baseline and all newer verified updater-extension
 receipts. Never run an older pinned installer or rollback wrapper over a later
-plugin integration. An updater fingerprint mismatch requires reconciliation from
-the newer trusted receipt, not replacing the updater or editing its old receipt
-merely to make validation pass.
+plugin integration.
 
 Preserve each profile's current plugin enable state and settings. The current
 installation helper explicitly enables PresenceGuard in the main profile, including on update;
