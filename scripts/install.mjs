@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { execFileSync } from "node:child_process";
-import { accessSync, chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -15,12 +15,6 @@ import { publishBaseline } from "./baseline-publication.mjs";
 
 const project = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = path => JSON.parse(regularBytes(path, "utf8"));
-const shellQuote = s => `'${s.replaceAll("'", "'\\''")}'`;
-export const PARENT_START_AWK = '{sub(/^.*\\) /, ""); print $20}';
-function atomic(path, value, mode = 0o600) {
-    const temp = `${path}.${process.pid}.new`;
-    writeFileSync(temp, value, { mode, flag: "wx" }); chmodSync(temp, mode); renameSync(temp, path);
-}
 export function processes() {
     const result = [];
     for (const pid of readdirSync("/proc").filter(p => /^\d+$/.test(p))) {
@@ -35,17 +29,19 @@ export function descriptor(path) {
     const stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077)) throw Error("descriptor_must_be_private_regular_file");
     const c = read(path);
-    for (const key of ["vencordRoot", "mainProfile", "altProfile", "mainLauncher", "updater", "updaterLock", "ledger"]) if (typeof c[key] !== "string" || !isAbsolute(c[key])) throw Error(`invalid_${key}`);
+    for (const key of ["vencordRoot", "mainProfile", "altProfile", "updater", "updaterLock", "ledger"]) if (typeof c[key] !== "string" || !isAbsolute(c[key])) throw Error(`invalid_${key}`);
     if (realpathSync(c.mainProfile) === realpathSync(c.altProfile)) throw Error("profiles_must_be_distinct");
     const state = read(join(c.mainProfile, "state.json"));
     if (state.vencordDir !== join(c.vencordRoot, "dist")) throw Error("main_profile_not_using_managed_dist");
     return c;
 }
+// Read-only: the host launcher owns starting the observer; report when it does not.
+const launcherStartsObserver = c => { try { return typeof c.mainLauncher === "string" ? regularBytes(c.mainLauncher, "utf8").includes("# PresenceGuard process-bound observer") : null; } catch { return null; } };
 export function inspect(c) {
     const settings = read(join(c.mainProfile, "settings/settings.json"));
     const marker = join(c.vencordRoot, "src/userplugins/presenceGuard/.presence-guard-stage.json");
     const pending = pendingIntegration(c);
-    return { baselineRecovery: Boolean(statOrNull(join(c.ledger, "baseline.sha256.publication"))), integrationRecovery: pending ? { kind: pending.kind, commit: pending.commit } : null, running: processes(), activeBuild: realpathSync(join(c.vencordRoot, "dist")), plugin: settings.plugins?.PresenceGuard ?? null, stagedCommit: existsSync(marker) ? read(marker).commit : null, existingSources: readdirSync(join(c.vencordRoot, "src/userplugins")).sort() };
+    return { launcherStartsObserver: launcherStartsObserver(c), baselineRecovery: Boolean(statOrNull(join(c.ledger, "baseline.sha256.publication"))), integrationRecovery: pending ? { kind: pending.kind, commit: pending.commit } : null, running: processes(), activeBuild: realpathSync(join(c.vencordRoot, "dist")), plugin: settings.plugins?.PresenceGuard ?? null, stagedCommit: existsSync(marker) ? read(marker).commit : null, existingSources: readdirSync(join(c.vencordRoot, "src/userplugins")).sort() };
 }
 function verifyCandidate(c) {
     const root = join(c.vencordRoot, "src/userplugins/presenceGuard");
@@ -69,31 +65,19 @@ export function restoreMain(current, before) {
     return next;
 }
 export function verifyWiring(c, recoverPublication = true) {
-    const rolledBack = rollbackRecord(c, recoverPublication);
-    for (const [key, backup, receipt] of [["mainLauncher", "main-launcher", "installed-launcher.sha256"], ["updater", "updater", "installed-updater.sha256"]]) {
-        const record = join(c.ledger, receipt);
-        if (key === "updater" && !existsSync(record)) throw Error("required_updater_receipt_missing");
-        if (key === "mainLauncher" && existsSync(join(c.ledger, "installed.json")) && !existsSync(record)) throw Error("required_launcher_receipt_missing");
-        const expected = existsSync(record) && !(rolledBack && key === "mainLauncher") ? regularBytes(record, "utf8", 128).trim() : hash(regularBytes(join(c.ledger, "backups", backup)));
-        if (!/^[a-f0-9]{64}$/.test(expected) || hash(regularBytes(c[key])) !== expected) throw Error(`${key}_drift`);
-    }
-    let modes;
-    if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json")) || statOrNull(join(c.ledger, "baseline.sha256.publication"))) modes = pinBaseline(c, recoverPublication).modes;
-    else { backupHashes(c); modes = originalModes(c); }
-    for (const [key, mode] of [["mainLauncher", modes["main-launcher"]], ["updater", modes.updater]]) if ((lstatSync(c[key]).mode & 0o7777) !== mode) throw Error(`${key}_mode_drift`);
-    return { launcherMode: modes["main-launcher"], updaterMode: modes.updater };
+    rollbackRecord(c, recoverPublication);
+    if (statOrNull(join(c.vencordRoot, ".presence-guard/baseline.json")) || statOrNull(join(c.ledger, "baseline.sha256.publication"))) pinBaseline(c, recoverPublication);
+    else backupHashes(c);
 }
 export { exclusiveLockDescriptor as updaterLockDescriptor, holdsExclusiveLock as holdsUpdaterLock } from "./locks.mjs";
 export function runUpdater(c, action, execute = execFileSync, expectedDist) {
     if (!["rebuild", "activate"].includes(action)) throw Error("unsupported_updater_action");
     const lock = updaterLockDescriptor(c.updaterLock);
     if (lock === undefined) throw Error("updater_lock_not_held");
-    const wiring = verifyWiring(c);
+    verifyWiring(c);
     const fd = openSync(c.updater, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     let snapshot;
     try {
-        const expected = regularBytes(join(c.ledger, "installed-updater.sha256"), "utf8", 128).trim();
-        if (hash(descriptorBytes(fd)) !== expected || (fstatSync(fd).mode & 0o7777) !== wiring.updaterMode) throw Error("updater_descriptor_drift");
         // Linux preserves these inherited descriptors through the script's shebang.
         // The reviewed updater validates FD 4 against its lock before accepting it.
         const stdio = ["inherit", "inherit", "inherit", fd, Number(lock)];
@@ -110,18 +94,13 @@ export function runUpdater(c, action, execute = execFileSync, expectedDist) {
 }
 function backupHashes(c) {
     const result = {};
-    for (const name of ["main-launcher", "updater", "main-plugins", "executable-modes.json"]) {
+    for (const name of ["main-plugins"]) {
         const path = join(c.ledger, "backups", name), stat = lstatSync(path);
         if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 4 * 1024 * 1024) throw Error("unsafe_backup");
         if (name === "main-plugins" && (!read(path)?.plugins || typeof read(path).plugins !== "object" || Array.isArray(read(path).plugins))) throw Error("malformed_backup_settings");
         result[name] = hash(regularBytes(path));
     }
     return result;
-}
-function originalModes(c) {
-    const modes = read(join(c.ledger, "backups/executable-modes.json"));
-    for (const key of ["main-launcher", "updater"]) if (!Number.isInteger(modes?.[key]) || modes[key] < 0 || modes[key] > 0o777 || (modes[key] & 0o500) !== 0o500) throw Error("invalid_original_executable_modes");
-    return { "main-launcher": modes["main-launcher"], updater: modes.updater };
 }
 function statOrNull(path) { try { return lstatSync(path); } catch (e) { if (e.code === "ENOENT") return null; throw e; } }
 export function writableTarget(path, allowMissing = false) {
@@ -150,7 +129,6 @@ export function rollbackRecord(c, recoverPublication = true) {
     return record;
 }
 export function preflightRollback(c) {
-    for (const path of [c.mainLauncher, c.updater]) writableTarget(path);
     for (const path of [join(c.mainProfile, "PresenceGuard/lease.json"), join(c.ledger, "rolled-back.json")]) writableTarget(path, true);
     const root = lstatSync(c.vencordRoot);
     if (!root.isDirectory() || root.isSymbolicLink()) throw Error("unsafe_vencord_root");
@@ -165,10 +143,6 @@ export function verifyCompletedRollback(c, currentSettings, baseline) {
     const lease = read(join(c.mainProfile, "PresenceGuard/lease.json"));
     if (lease?.enabled !== false || !Number.isFinite(lease.at)) throw Error("rollback_lease_drift");
 }
-export function restoreExecutables(c, baseline) {
-    atomic(c.mainLauncher, regularBytes(join(c.ledger, "backups/main-launcher")), baseline.modes["main-launcher"]);
-    atomic(c.updater, regularBytes(join(c.ledger, "backups/updater")), baseline.modes.updater);
-}
 export function pinBaseline(c, recoverPublication = true) {
     const root = join(c.vencordRoot, ".presence-guard"), path = join(root, "baseline.json");
     const anchor = join(c.ledger, "baseline.sha256");
@@ -180,7 +154,7 @@ export function pinBaseline(c, recoverPublication = true) {
     const initial = () => {
         const dist = realpathSync(join(c.vencordRoot, "dist"));
         if (!dist.startsWith(`${realpathSync(join(c.vencordRoot, ".wout-releases"))}/`) || !dist.endsWith("/dist")) throw Error("baseline_not_retained_release");
-        return { dist, files: inventory(dist), backups: backupHashes(c), modes: originalModes(c) };
+        return { dist, files: inventory(dist), backups: backupHashes(c) };
     };
     const validateInitial = candidate => {
         if (existsSync(join(c.ledger, "installed.json")) || JSON.stringify(candidate) !== JSON.stringify(initial())) throw Error("initial_baseline_state_changed");
@@ -199,8 +173,7 @@ export function pinBaseline(c, recoverPublication = true) {
     if (typeof baseline.dist !== "string" || !baseline.dist.startsWith(`${realpathSync(join(c.vencordRoot, ".wout-releases"))}/`) || !baseline.dist.endsWith("/dist") || realpathSync(baseline.dist) !== baseline.dist) throw Error("baseline_path_drift");
     if (JSON.stringify(inventory(baseline.dist)) !== JSON.stringify(baseline.files)) throw Error("baseline_build_drift");
     const backups = backupHashes(c);
-    if (JSON.stringify(baseline.backups) !== JSON.stringify(backups)) throw Error("backup_drift");
-    if (JSON.stringify(baseline.modes) !== JSON.stringify(originalModes(c))) throw Error("original_modes_drift");
+    if (baseline.backups?.["main-plugins"] !== backups["main-plugins"]) throw Error("backup_drift");
     return baseline;
 }
 export function planHelper(c) {
@@ -210,8 +183,7 @@ export function planHelper(c) {
         if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) throw Error("helper_directory_drift");
         accessSync(stat ? path : dirname(path), constants.W_OK);
     }
-    writableTarget(c.mainLauncher);
-    for (const name of ["installed-launcher.sha256", "installed.json"]) writableTarget(join(c.ledger, name), true);
+    writableTarget(join(c.ledger, "installed.json"), true);
     accessSync(c.ledger, constants.W_OK);
     if (existsSync(native)) for (const name of ["helper.log", "lease.json", "history.json", "diagnostics.json", "installation.json"]) writableTarget(join(native, name), true);
     if (existsSync(root)) writableTarget(join(root, "display.json"), true);
@@ -225,19 +197,7 @@ export function planHelper(c) {
         if (statOrNull(path)) throw Error("unowned_runtime_artifact");
     }
     if (Boolean(helperStat) !== hasReceipt || (helperStat && (!helperStat.isFile() || helperStat.isSymbolicLink() || hash(regularBytes(helperPath)) !== read(receipt).helperHash))) throw Error("installed_helper_drift");
-    const launcher = regularBytes(c.mainLauncher, "utf8");
-    const marker = "# PresenceGuard process-bound observer";
-    const installed = join(c.ledger, "installed-launcher.sha256");
-    if (launcher.includes(marker)) {
-        if (!existsSync(installed) || regularBytes(installed, "utf8").trim() !== hash(launcher)) throw Error("launcher_drift");
-        return { root, native, configPath, launcher };
-    }
-    const lines = launcher.trimEnd().split("\n");
-    if (!lines.at(-1).startsWith("exec ") || !lines.at(-1).includes("mullvad-exclude") || !lines.at(-1).includes("flatpak run")) throw Error("unsupported_launcher_shape_preserved");
-    const launch = lines.pop();
-    const injection = `${marker}\npg_start=$(awk ${shellQuote(PARENT_START_AWK)} /proc/$$/stat)\n/usr/bin/gjs -m ${shellQuote(join(root, "display-helper.mjs"))} "$$" "$pg_start" ${shellQuote(join(root, "display.json"))} ${shellQuote(join(native, "lease.json"))} >> ${shellQuote(join(native, "helper.log"))} 2>&1 &\n`;
-    const next = `${lines.join("\n")}\n${injection}${launch}\n`;
-    return { root, native, configPath, launcher: next };
+    return { root, native, configPath };
 }
 export function candidateDist(c, commit) {
     if (typeof c.updaterPending !== "string" || !isAbsolute(c.updaterPending)) throw Error("updaterPending_required_for_installation");
@@ -288,7 +248,7 @@ export async function main(args) {
         const recovery = pendingIntegration(c);
         if (recovery) return console.log(JSON.stringify({ action, recovery: { kind: recovery.kind, commit: recovery.commit }, message: "Repeat the interrupted action while both profiles are closed; rollback can cancel an unactivated install." }));
         if (action === "install" || action === "update") { verifyWiring(c, false); planSettings(c); planHelper(c); candidateDist(c, verifyCandidate(c).commit); }
-        return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper launcher", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
+        return console.log(JSON.stringify({ action, ...inspect(c), changes: ["main plugin settings", "main helper", "retained build activation"], restarts: "Both profiles must be gracefully closed by the operator; no implicit termination." }, null, 2));
     }
     if (processes().length) throw Error("vesktop_running_close_identified_profiles_gracefully_after_call_capture_preflight");
     if (!locked) return underLock();
@@ -307,7 +267,7 @@ export async function main(args) {
         const manifest = verifyCandidate(c);
         const preflight = snapshotIntegrationTargets(c);
         // The maintained updater inherits the held lock and retains candidate/activation checks.
-        const wiring = verifyWiring(c);
+        verifyWiring(c);
         const rolledBack = rollbackRecord(c);
         if (rolledBack && realpathSync(join(c.vencordRoot, "dist")) !== rolledBack.dist) throw Error("rollback_build_drift");
         const settings = planSettings(c);
@@ -318,8 +278,6 @@ export async function main(args) {
         const receipt = { commit: manifest.commit, helperHash: hash(helper), installedAt: new Date().toISOString(), dist: active, rendererHash: hash(regularBytes(join(active, "vencordDesktopRenderer.js"))), mainHash: hash(regularBytes(join(active, "vencordDesktopMain.js"))) };
         const changes = [
             { key: "helper", data: helper },
-            { key: "launcher", data: plan.launcher, mode: wiring.launcherMode },
-            { key: "launcherReceipt", data: `${hash(plan.launcher)}\n` },
             { key: "settings", data: JSON.stringify(settings) }
         ];
         if (!existsSync(plan.configPath) || rolledBack) changes.push({ key: "helperConfig", data: JSON.stringify({ version: 1, snapshot: join(plan.root, "display.json"), welcome: true }) });
@@ -340,7 +298,7 @@ export async function main(args) {
     const baseline = pinBaseline(c);
     if (existsSync(rolledBack)) {
         verifyCompletedRollback(c, currentSettings, baseline);
-        if (realpathSync(join(c.vencordRoot, "dist")) !== baseline.dist || hash(regularBytes(c.mainLauncher)) !== hash(regularBytes(join(c.ledger, "backups/main-launcher"))) || hash(regularBytes(c.updater)) !== hash(regularBytes(join(c.ledger, "backups/updater"))) || (lstatSync(c.mainLauncher).mode & 0o7777) !== baseline.modes["main-launcher"] || (lstatSync(c.updater).mode & 0o7777) !== baseline.modes.updater) throw Error("rollback_drift");
+        if (realpathSync(join(c.vencordRoot, "dist")) !== baseline.dist) throw Error("rollback_drift");
         return console.log("Previous integration is already restored; history retained.");
     }
     verifyWiring(c);
@@ -349,10 +307,8 @@ export async function main(args) {
     const receipt = read(join(c.ledger, "installed.json"));
     if (current !== receipt.dist || hash(regularBytes(join(current, "vencordDesktopRenderer.js"))) !== receipt.rendererHash || hash(regularBytes(join(current, "vencordDesktopMain.js"))) !== receipt.mainHash) throw Error("active_build_changed_since_installation");
     const tx = prepareIntegration(c, "rollback", receipt.commit, baseline.dist, [
-        { key: "launcher", data: regularBytes(join(c.ledger, "backups/main-launcher")), mode: baseline.modes["main-launcher"] },
         { key: "settings", data: JSON.stringify(settings) },
         { key: "lease", data: JSON.stringify({ enabled: false, at: Date.now() }) },
-        { key: "updater", data: regularBytes(join(c.ledger, "backups/updater")), mode: baseline.modes.updater },
         { key: "rolledBack", data: JSON.stringify({ at: new Date().toISOString(), dist: baseline.dist }) }
     ].map(change => ({ ...change, expectedBefore: preflight[change.key], expectedParents: preflight.parents })));
     finishIntegration(c, tx, () => { throw Error("rollback_does_not_execute_updater"); });

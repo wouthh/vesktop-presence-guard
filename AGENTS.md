@@ -130,7 +130,9 @@ separately authorized. Public repository creation is authorized for this task.
 
 Use an explicit installation descriptor stored outside this repository. Never
 embed workstation paths in tracked files. Honor the existing updater's lock,
-source validation, retained-release activation and rollback. Read
+source validation, retained-release activation and rollback. The Vesktop
+launcher and updater executable belong to the host tooling: the installer never
+records, pins, edits or restores them. Read
 [the delivery procedure](docs/installation.md) explicitly before delivery.
 Apply the owner's scoped restart authority recorded outside the repository;
 timing permission does not waive the required durable closed-client state,
