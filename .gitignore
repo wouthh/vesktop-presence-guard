@@ -5,3 +5,4 @@ coverage/
 *.local.json
 *.log
 .env*
+/graft/
