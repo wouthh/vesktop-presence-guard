@@ -7,10 +7,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // These are structural fingerprints, not copied Discord source fixtures.
 export const actionPatch = {
-    find: /async function \w+\(\w+\)\{let\{nextStatus:\w+,prevStatus:/,
+    // Discord exports this either as a named function or as an anonymous object member.
+    find: /async function(?: \w+)?\(\w+\)\{let\{nextStatus:\w+,prevStatus:/,
     replacement: {
-        match: /async function (\w+)\((\w+)\)\{(?=let\{nextStatus:)/,
-        replace: "async function $1($2){$self.statusAction($2);"
+        match: /async function( \w+)?\((\w+)\)\{(?=let\{nextStatus:)/,
+        replace: "async function$1($2){$self.statusAction($2);"
     }
 };
 export const protoPatch = {
@@ -66,7 +67,8 @@ export const cameraPatch = {
 export const nativeIdlePatch = {
     find: 'type:"IDLE",idle:!0,idleSince:',
     replacement: {
-        match: /Date\.now\(\)-(\w+)>(\w+)\.(\w+)\|\|(\w+)\(\)\?(\w+)\|\|(\w+)\.h\.dispatch\(\{type:"IDLE",idle:!0,idleSince:(\w+)\}\):\5&&\6\.h\.dispatch\(\{type:"IDLE",idle:!1\}\)/,
-        replace: "$self.nativeIdleProviderReady(()=>{const wanted=$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4());const current=$self.nativeIdleCurrent();$self.nativeIdleObserved(wanted,current);if(wanted&&!current){$self.nativeIdleDispatch(true);$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})}else if(!wanted&&current){$self.nativeIdleDispatch(false);$6.h.dispatch({type:\"IDLE\",idle:!1})}});$self.nativeIdleDecision(Date.now()-$1>$2.$3||$4())?$5||($self.nativeIdleDispatch(true),$6.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$7})):$5&&($self.nativeIdleDispatch(false),$6.h.dispatch({type:\"IDLE\",idle:!1}))"
+        // The idle threshold is either a named constant (A.sdF) or an inlined literal (6e5).
+        match: /Date\.now\(\)-(\w+)>([\w$.]+)\|\|(\w+)\(\)\?(\w+)\|\|(\w+)\.h\.dispatch\(\{type:"IDLE",idle:!0,idleSince:(\w+)\}\):\4&&\5\.h\.dispatch\(\{type:"IDLE",idle:!1\}\)/,
+        replace: "$self.nativeIdleProviderReady(()=>{const wanted=$self.nativeIdleDecision(Date.now()-$1>$2||$3());const current=$self.nativeIdleCurrent();$self.nativeIdleObserved(wanted,current);if(wanted&&!current){$self.nativeIdleDispatch(true);$5.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$6})}else if(!wanted&&current){$self.nativeIdleDispatch(false);$5.h.dispatch({type:\"IDLE\",idle:!1})}});$self.nativeIdleDecision(Date.now()-$1>$2||$3())?$4||($self.nativeIdleDispatch(true),$5.h.dispatch({type:\"IDLE\",idle:!0,idleSince:$6})):$4&&($self.nativeIdleDispatch(false),$5.h.dispatch({type:\"IDLE\",idle:!1}))"
     }
 };
